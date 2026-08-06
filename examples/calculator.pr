@@ -1,0 +1,9 @@
+# Simple calculator (MASTER_DOCUMENT.md §20.2)
+
+hold a = number(ask("Enter first number"))
+hold b = number(ask("Enter second number"))
+
+say "Sum:", a + b
+say "Difference:", a - b
+say "Product:", a * b
+say "Quotient:", a / b

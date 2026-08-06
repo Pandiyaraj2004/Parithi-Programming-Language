@@ -1,0 +1,17 @@
+# FizzBuzz (MASTER_DOCUMENT.md §20.3)
+
+repeat 15 as i
+    if i % 15 is 0
+        say "FizzBuzz"
+    else
+        if i % 3 is 0
+            say "Fizz"
+        else
+            if i % 5 is 0
+                say "Buzz"
+            else
+                say i
+            end if
+        end if
+    end if
+end repeat

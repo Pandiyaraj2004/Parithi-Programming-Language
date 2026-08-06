@@ -1,0 +1,14 @@
+# While loop with break/continue (MASTER_DOCUMENT.md §20.5)
+# Output: 1 3 5 7 9 (one per line)
+
+hold n = 0
+while true
+    n = n + 1
+    if n % 2 is 0
+        continue
+    end if
+    if n is more than 9
+        break
+    end if
+    say n
+end while

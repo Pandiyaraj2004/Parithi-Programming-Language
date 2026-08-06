@@ -1,0 +1,22 @@
+# Conditionals and the choose/option/other switch statement (MASTER_DOCUMENT.md §15.1, §15.2)
+
+hold age = 20
+
+if age >= 18
+    say "Adult"
+else
+    say "Minor"
+end if
+
+hold day = 2
+
+choose day
+    option 1
+        say "Monday"
+    option 2
+        say "Tuesday"
+    option 3
+        say "Wednesday"
+    other
+        say "Unknown"
+end choose

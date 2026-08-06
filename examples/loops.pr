@@ -1,0 +1,23 @@
+# repeat, while, break, and continue (MASTER_DOCUMENT.md §15.3-§15.6)
+
+repeat 5 as i
+    say i
+end repeat
+
+hold count = 1
+while count <= 5
+    say count
+    count = count + 1
+end while
+
+hold n = 0
+while true
+    n = n + 1
+    if n % 2 is 0
+        continue
+    end if
+    if n is more than 9
+        break
+    end if
+    say n
+end while

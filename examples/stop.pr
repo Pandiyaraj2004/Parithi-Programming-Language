@@ -1,0 +1,13 @@
+# The "stop" statement (MASTER_DOCUMENT.md §15.7)
+# Terminates the whole program immediately, with an optional exit code.
+
+task validate(age)
+    if age < 0
+        say "Invalid age — stopping."
+        stop 1
+    end if
+    return true
+end task
+
+validate(-5)
+say "This line never runs."

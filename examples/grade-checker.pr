@@ -1,0 +1,17 @@
+# Grade checker — function + readable comparisons (MASTER_DOCUMENT.md §20.4)
+
+task gradeFor(score)
+    if score is at least 90
+        return "A"
+    end if
+    if score is at least 80
+        return "B"
+    end if
+    if score is at least 70
+        return "C"
+    end if
+    return "F"
+end task
+
+hold studentScore = number(ask("Enter score"))
+say "Grade:", gradeFor(studentScore)

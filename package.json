@@ -1,0 +1,36 @@
+{
+  "name": "parithi",
+  "version": "1.0.0",
+  "description": "Parithi — a human-friendly, statically-typed scripting language and CLI, designed for readability and simplicity.",
+  "type": "module",
+  "bin": {
+    "pari": "./bin/pari.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node bin/pari.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "parithi",
+    "programming-language",
+    "interpreter",
+    "compiler",
+    "lexer",
+    "parser",
+    "cli",
+    "scripting-language",
+    "tree-walking-interpreter"
+  ],
+  "author": "Parithi Contributors",
+  "license": "MIT",
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ]
+}

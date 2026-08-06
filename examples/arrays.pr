@@ -1,0 +1,24 @@
+# Arrays — the "box" keyword (MASTER_DOCUMENT.md §Arrays)
+
+hold fruits = box("apple", "banana", "cherry")
+say fruits
+
+push(fruits, "date")
+say "After push:", fruits
+
+hold removed = pop(fruits)
+say "Popped:", removed
+say "After pop:", fruits
+
+sort(fruits)
+say "Sorted:", fruits
+
+say "Contains banana:", contains(fruits, "banana")
+say "Total fruits:", len(fruits)
+
+hold scores = box(88, 92, 79, 95)
+hold total = 0
+repeat len(scores) as i
+    total = total + scores[i - 1]
+end repeat
+say "Average score:", total / len(scores)

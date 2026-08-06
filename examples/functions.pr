@@ -1,0 +1,14 @@
+# Functions, parameters, and return values (MASTER_DOCUMENT.md §16)
+
+task greet(name)
+    say "Hello", name
+end task
+
+greet("Pandiyaraj")
+
+task add(a, b)
+    return a + b
+end task
+
+hold result = add(10, 20)
+say "Result:", result

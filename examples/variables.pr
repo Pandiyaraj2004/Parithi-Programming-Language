@@ -1,0 +1,14 @@
+# Variables, constants, and the five built-in data types (MASTER_DOCUMENT.md §14)
+
+hold age = 20
+hold price = 199.99
+hold name = "Pandiyaraj"
+hold isStudent = true
+hold data = empty
+const PI = 3.14159
+
+say "Name:", name
+say "Age:", age
+say "Price:", price
+say "Is student:", isStudent
+say "PI:", PI
