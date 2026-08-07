@@ -209,9 +209,19 @@ export class BytecodeGenerator {
       case NodeType.CHOOSE_STATEMENT:
         return this.compileChooseStatement(node);
       case NodeType.REPEAT_STATEMENT:
-        return this.compileRepeatStatement(node);
+        // §36 — compileRepeatStatement() now ALWAYS leaves one result value
+        // on the stack (its "break <expr>" value, or Empty on natural
+        // exhaustion), so it can double as an expression (compileExpression()
+        // below reuses the exact same function). As a bare statement,
+        // nothing reads that value — discard it, exactly like
+        // EXPRESSION_STATEMENT already does for every other expression.
+        this.compileRepeatStatement(node);
+        this.emit(Opcode.POP, [], node);
+        return;
       case NodeType.WHILE_STATEMENT:
-        return this.compileWhileStatement(node);
+        this.compileWhileStatement(node);
+        this.emit(Opcode.POP, [], node);
+        return;
       case NodeType.BREAK_STATEMENT:
         return this.compileBreakStatement(node);
       case NodeType.CONTINUE_STATEMENT:
@@ -328,6 +338,20 @@ export class BytecodeGenerator {
    * to the condition — a bare `continue` must still advance the counter,
    * exactly like the JS `for`-loop the Interpreter itself compiles down to.
    */
+  /**
+   * §36 (Unified Loop Model): every loop kind now ALWAYS leaves exactly
+   * one result value on the stack when it finishes — the value some
+   * "break <expr>" supplied (pushed by compileBreakStatement below, right
+   * before its JMP to `endLabel`), or Empty if the loop exited "naturally"
+   * (the count/condition became false without any break ever running).
+   * Reusing the existing convergent-jump pattern compileShortCircuit()
+   * already established (two paths, each pushing one value, meeting at
+   * one label) — no new opcodes needed. The natural-exit path needs its
+   * OWN label (`naturalExitLabel`, distinct from `endLabel`) so it can
+   * push that Empty constant on its way through; `break` still jumps
+   * straight to `endLabel`, skipping that push entirely since it already
+   * pushed its own value.
+   */
   compileRepeatStatement(node) {
     this.compileExpression(node.count);
     const limitSlot = this.mangle('$repeat_limit');
@@ -340,13 +364,14 @@ export class BytecodeGenerator {
 
     const condLabel = this.newLabel('repeat_cond_');
     const continueLabel = this.newLabel('repeat_continue_');
+    const naturalExitLabel = this.newLabel('repeat_natural_exit_');
     const endLabel = this.newLabel('repeat_end_');
 
     this.placeLabel(condLabel);
     this.emit(Opcode.LOAD, [this.constName(counterSlot)], node);
     this.emit(Opcode.LOAD, [this.constName(limitSlot)], node);
     this.emit(Opcode.LE, [], node);
-    this.emit(Opcode.JMP_IF_FALSE, [endLabel], node);
+    this.emit(Opcode.JMP_IF_FALSE, [naturalExitLabel], node);
 
     this.loopStack.push({ breakLabel: endLabel, continueLabel });
     this.compileBlockStatements(node.body.body);
@@ -359,17 +384,20 @@ export class BytecodeGenerator {
     this.emit(Opcode.STORE, [this.constName(counterSlot)], node);
     this.emit(Opcode.JMP, [condLabel], node);
 
+    this.placeLabel(naturalExitLabel);
+    this.emit(Opcode.PUSH, [this.constEmpty()], node); // no "break <expr>" ran — the loop's value is Empty
     this.placeLabel(endLabel);
     this.popScope();
   }
 
   compileWhileStatement(node) {
     const condLabel = this.newLabel('while_cond_');
+    const naturalExitLabel = this.newLabel('while_natural_exit_');
     const endLabel = this.newLabel('while_end_');
 
     this.placeLabel(condLabel);
     this.compileExpression(node.condition);
-    this.emit(Opcode.JMP_IF_FALSE, [endLabel], node);
+    this.emit(Opcode.JMP_IF_FALSE, [naturalExitLabel], node);
 
     this.pushScope();
     this.loopStack.push({ breakLabel: endLabel, continueLabel: condLabel });
@@ -378,11 +406,43 @@ export class BytecodeGenerator {
     this.popScope();
 
     this.emit(Opcode.JMP, [condLabel], node);
+    this.placeLabel(naturalExitLabel);
+    this.emit(Opcode.PUSH, [this.constEmpty()], node); // no "break <expr>" ran — the loop's value is Empty
+    this.placeLabel(endLabel);
+  }
+
+  /**
+   * "loop ... end loop" (§36) — unconditional; unlike "while"/"repeat"
+   * above, there is no condition-false "natural exit" at all — the body
+   * always jumps straight back to its own start, so `endLabel` is reached
+   * ONLY via some "break"'s PUSH-then-JMP (see compileBreakStatement).
+   * This is the same "code after an unconditional JMP is reachable only
+   * by an explicit jump target, never by fallthrough" shape "if/else"
+   * bytecode already relies on for its own then/else merge — nothing new
+   * for the Validator to handle.
+   */
+  compileLoopExpression(node) {
+    const bodyLabel = this.newLabel('loop_body_');
+    const endLabel = this.newLabel('loop_end_');
+
+    this.placeLabel(bodyLabel);
+    this.pushScope();
+    this.loopStack.push({ breakLabel: endLabel, continueLabel: bodyLabel });
+    this.compileBlockStatements(node.body.body);
+    this.loopStack.pop();
+    this.popScope();
+    this.emit(Opcode.JMP, [bodyLabel], node);
+
     this.placeLabel(endLabel);
   }
 
   compileBreakStatement(node) {
     const loop = this.loopStack.at(-1); // Semantic Analysis (P018) already guarantees this exists
+    if (node.value) {
+      this.compileExpression(node.value);
+    } else {
+      this.emit(Opcode.PUSH, [this.constEmpty()], node); // §36 — a bare "break" contributes Empty, same as natural exit above
+    }
     this.emit(Opcode.JMP, [loop.breakLabel], node);
   }
 
@@ -458,6 +518,15 @@ export class BytecodeGenerator {
         return this.compileArrayLiteral(node);
       case NodeType.ARRAY_ACCESS:
         return this.compileArrayAccess(node);
+      case NodeType.LOOP_EXPRESSION:
+        return this.compileLoopExpression(node);
+      case NodeType.REPEAT_STATEMENT:
+        // §36 — "repeat"/"while" may now also appear in expression
+        // position (e.g. "hold r = repeat ... end repeat"); reuses the
+        // exact same compiler the statement-dispatch case above calls.
+        return this.compileRepeatStatement(node);
+      case NodeType.WHILE_STATEMENT:
+        return this.compileWhileStatement(node);
       default:
         throw new Error(`BytecodeGenerator: no expression compiler for node type "${node.type}".`);
     }

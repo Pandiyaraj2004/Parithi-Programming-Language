@@ -69,8 +69,22 @@ export class Lexer {
 
     switch (c) {
       case ' ':
-      case '\r':
       case '\t':
+        return;
+
+      case '\r':
+        // CRLF ("\r\n"): this "\r" is silently absorbed — the "\n" case
+        // just below emits the one NEWLINE, exactly as it always has.
+        // A bare "\r" with no following "\n" (classic pre-OS X Mac line
+        // endings) previously fell through the same silent-skip path as
+        // this case's " "/"\t" siblings, so a file using only "\r" never
+        // produced a single NEWLINE token — every statement collapsed
+        // onto one logical line. Treat it as its own line break instead,
+        // matching how every OTHER line-ending convention already works.
+        if (this.peek() === '\n') return;
+        this.addToken(TokenType.NEWLINE, '\\r', '\n');
+        this.line++;
+        this.column = 1;
         return;
 
       case '\n':

@@ -1,8 +1,8 @@
 /**
- * Array built-ins — push(), pop(), insert(), remove(), sort(), reverse(),
- * contains() (Phase 9, §Arrays). Also exports the shared validation
- * helpers Interpreter.js uses directly for array-literal construction and
- * index read/write (visitArrayLiteral/visitArrayAccess/visitArrayAssignment),
+ * Array built-ins — push(), pop(), insert(), remove(), sort(), reverse()
+ * (Phase 9, §Arrays). Also exports the shared validation helpers
+ * Interpreter.js uses directly for array-literal construction and index
+ * read/write (visitArrayLiteral/visitArrayAccess/visitArrayAssignment),
  * so every array-mutating path — a built-in call or a bare "arr[i] = x" —
  * enforces the exact same rules through one place.
  *
@@ -11,10 +11,14 @@
  * can (TypeChecker.inferArrayLiteral/inferArrayAccess), but an Unknown-typed
  * value (a function parameter, most commonly) can only ever be validated
  * once its actual runtime value exists — which is here.
+ *
+ * contains() itself is NOT here — Phase 13a (§32.3) made it polymorphic
+ * (Array or String), and that version lives in stdlib/array/index.js and
+ * is the one actually registered; this file no longer defines its own.
  */
 
 import { ParithiRuntimeError } from '../../errors/index.js';
-import { wrap, deepEquals } from '../../runtime/runtime-value.js';
+import { wrap } from '../../runtime/runtime-value.js';
 import { DataType, typesCompatible } from '../../semantic/types.js';
 
 export function assertArray(value, context, location) {
@@ -215,10 +219,4 @@ export function reverse(args, location) {
   assertArray(array, 'reverse()', location);
   array.reverse();
   return array;
-}
-
-export function contains(args, location) {
-  const [array, item] = args;
-  assertArray(array, 'contains()', location);
-  return array.some((element) => deepEquals(element, item));
 }

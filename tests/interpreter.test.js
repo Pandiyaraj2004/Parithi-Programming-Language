@@ -186,6 +186,11 @@ describe('Choose', () => {
     const source = ['hold day = 5', 'choose day', '    option 5', '        say "Friday"', '    option 6', '        say "Saturday"', 'end choose'].join('\n');
     assert.deepEqual(run(source), ['Friday']);
   });
+
+  test('a negative option value ("option -1") correctly matches a negative discriminant (production-readiness audit fix)', () => {
+    const source = ['hold x = -1', 'choose x', '    option -1', '        say "negative one"', '    option 0', '        say "zero"', '    other', '        say "other"', 'end choose'].join('\n');
+    assert.deepEqual(run(source), ['negative one']);
+  });
 });
 
 describe('Repeat', () => {
@@ -670,5 +675,142 @@ describe('Arrays (§Arrays)', () => {
       const source = ['task doPush(x)', '    push(x, 1)', 'end task', '', 'doPush(5)'].join('\n');
       assert.throws(() => run(source), (err) => err.code === 'P002');
     });
+  });
+});
+
+describe('Unified Loop Model (§36)', () => {
+  test('a bare "loop" with a counted "break" produces the documented output', () => {
+    const source = 'hold i = 1\nloop\n    say i\n    if i == 5\n        break\n    end if\n    i = i + 1\nend loop';
+    assert.deepEqual(run(source), ['1', '2', '3', '4', '5']);
+  });
+
+  test('"continue" inside a "loop" skips the rest of that iteration only', () => {
+    const source = [
+      'hold i = 0',
+      'loop',
+      '    i = i + 1',
+      '    if i == 3',
+      '        continue',
+      '    end if',
+      '    say i',
+      '    if i == 5',
+      '        break',
+      '    end if',
+      'end loop',
+    ].join('\n');
+    assert.deepEqual(run(source), ['1', '2', '4', '5']);
+  });
+
+  test('"break <expression>" is evaluated exactly once and becomes the loop\'s value', () => {
+    const source = [
+      'hold items = box(3, 7, 10, 15)',
+      'hold i = 0',
+      'hold result = loop',
+      '    hold item = items[i]',
+      '    if item == 10',
+      '        break item',
+      '    end if',
+      '    i = i + 1',
+      'end loop',
+      'say result',
+    ].join('\n');
+    assert.deepEqual(run(source), ['10']);
+  });
+
+  test('a bare "break" (no value) makes the loop expression evaluate to Empty', () => {
+    assert.deepEqual(run('hold r = loop\n    break\nend loop\nsay type(r)'), ['Empty']);
+  });
+
+  test('nested loops: the inner "break" only terminates the inner loop, and its value never reaches the outer result', () => {
+    const source = 'hold result = loop\n    loop\n        break 10\n    end loop\n    break 20\nend loop\nsay result';
+    assert.deepEqual(run(source), ['20']);
+  });
+
+  test('deeply nested loops: each "break" terminates only its own nearest loop', () => {
+    const source = [
+      'hold count = 0',
+      'loop',
+      '    loop',
+      '        loop',
+      '            count = count + 1',
+      '            break',
+      '        end loop',
+      '        break',
+      '    end loop',
+      '    break',
+      'end loop',
+      'say count',
+    ].join('\n');
+    assert.deepEqual(run(source), ['1']);
+  });
+
+  test('"break" inside a loop that is itself inside a function does not return from the function', () => {
+    const source = 'task find()\n    loop\n        if true\n            break 42\n        end if\n    end loop\n    return 1\nend task\nsay find()';
+    assert.deepEqual(run(source), ['1']);
+  });
+
+  test('"return" inside a loop is distinct from "break" — it exits the enclosing function, not just the loop', () => {
+    const source = 'task find()\n    loop\n        return 42\n    end loop\n    return 1\nend task\nsay find()';
+    assert.deepEqual(run(source), ['42']);
+  });
+
+  test('a recursive function whose body contains a loop works correctly across recursive calls', () => {
+    const source = [
+      'task countDown(n)',
+      '    loop',
+      '        if n == 0',
+      '            return 0',
+      '        end if',
+      '        break',
+      '    end loop',
+      '    return n',
+      'end task',
+      'say countDown(3)',
+      'say countDown(0)',
+    ].join('\n');
+    assert.deepEqual(run(source), ['3', '0']);
+  });
+
+  test('"while" used as an expression evaluates to its "break <expression>" value', () => {
+    const source = [
+      'hold x = 0',
+      'hold r = while x < 10',
+      '    x = x + 1',
+      '    if x == 5',
+      '        break x',
+      '    end if',
+      'end while',
+      'say r',
+    ].join('\n');
+    assert.deepEqual(run(source), ['5']);
+  });
+
+  test('"repeat" used as an expression evaluates to its "break <expression>" value', () => {
+    const source = 'hold r = repeat 10 as i\n    if i == 4\n        break i\n    end if\nend repeat\nsay r';
+    assert.deepEqual(run(source), ['4']);
+  });
+
+  test('"while"/"repeat" with no "break" at all still run exactly as before (a bare statement, natural exit)', () => {
+    assert.deepEqual(run('hold i = 0\nwhile i < 3\n    say i\n    i = i + 1\nend while'), ['0', '1', '2']);
+    assert.deepEqual(run('repeat 3 as i\n    say i\nend repeat'), ['1', '2', '3']);
+  });
+
+  test('"while" used as an expression that exits naturally (no "break") evaluates to Empty', () => {
+    assert.deepEqual(run('hold x = 10\nhold r = while x < 5\n    x = x + 1\nend while\nsay type(r)'), ['Empty']);
+  });
+
+  test('a loop combined with array indexing and a Standard Library call', () => {
+    const source = [
+      'hold items = box("a", "b", "c")',
+      'hold i = 0',
+      'loop',
+      '    if i >= len(items)',
+      '        break',
+      '    end if',
+      '    say upper(items[i])',
+      '    i = i + 1',
+      'end loop',
+    ].join('\n');
+    assert.deepEqual(run(source), ['A', 'B', 'C']);
   });
 });

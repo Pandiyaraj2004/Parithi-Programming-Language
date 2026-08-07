@@ -1,0 +1,24 @@
+# A recursive function whose body contains a loop — recursion and the
+# unified loop model compose without any special interaction.
+
+task sumDigits(n)
+    hold remaining = n
+    hold total = 0
+
+    loop
+        if remaining == 0
+            break
+        end if
+
+        total = total + (remaining % 10)
+        remaining = floor(remaining / 10)
+    end loop
+
+    if total >= 10
+        return sumDigits(total)
+    end if
+
+    return total
+end task
+
+say sumDigits(12345)

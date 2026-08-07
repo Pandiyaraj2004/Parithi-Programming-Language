@@ -1,0 +1,12 @@
+# Nested loops each track their OWN break value independently — the
+# inner loop's "break 10" never becomes the outer loop's result.
+
+hold result = loop
+    loop
+        break 10
+    end loop
+
+    break 20
+end loop
+
+say result

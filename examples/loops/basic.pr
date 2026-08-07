@@ -1,0 +1,15 @@
+# The unified loop model (MASTER_DOCUMENT.md §36): "loop" is unconditional
+# and exits only via "break" (or "return"/"stop") — there is no built-in
+# exit condition of its own, unlike "while"/"repeat".
+
+hold i = 1
+
+loop
+    say i
+
+    if i == 5
+        break
+    end if
+
+    i = i + 1
+end loop

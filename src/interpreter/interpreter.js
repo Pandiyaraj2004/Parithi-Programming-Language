@@ -123,7 +123,8 @@ export class Interpreter {
       case NodeType.CHOOSE_STATEMENT: return this.visitChooseStatement(node, env);
       case NodeType.REPEAT_STATEMENT: return this.visitRepeatStatement(node, env);
       case NodeType.WHILE_STATEMENT: return this.visitWhileStatement(node, env);
-      case NodeType.BREAK_STATEMENT: return this.visitBreakStatement(node);
+      case NodeType.LOOP_EXPRESSION: return this.visitLoopExpression(node, env);
+      case NodeType.BREAK_STATEMENT: return this.visitBreakStatement(node, env);
       case NodeType.CONTINUE_STATEMENT: return this.visitContinueStatement(node);
       case NodeType.TASK_DECLARATION: return this.visitTaskDeclaration(node, env);
       case NodeType.RETURN_STATEMENT: return this.visitReturnStatement(node, env);
@@ -272,6 +273,7 @@ export class Interpreter {
   visitRepeatStatement(node, env) {
     const count = this.evaluate(node.count, env);
     this.context.enterLoop();
+    let result = null; // §36 — Empty (JS null) unless a "break <expr>" overrides it below
 
     try {
       for (let i = 1; i <= count; i++) {
@@ -285,6 +287,7 @@ export class Interpreter {
         } catch (signal) {
           if (signal instanceof BreakSignal) {
             this.runtime.environments.truncateTo(baseDepth);
+            result = signal.value;
             break;
           }
           if (signal instanceof ContinueSignal) {
@@ -298,10 +301,12 @@ export class Interpreter {
     } finally {
       this.context.exitLoop();
     }
+    return result;
   }
 
   visitWhileStatement(node, env) {
     this.context.enterLoop();
+    let result = null; // §36 — Empty (JS null) unless a "break <expr>" overrides it below
 
     try {
       while (this.evaluate(node.condition, env)) {
@@ -314,7 +319,47 @@ export class Interpreter {
         } catch (signal) {
           if (signal instanceof BreakSignal) {
             this.runtime.environments.truncateTo(baseDepth);
+            result = signal.value;
             break;
+          }
+          if (signal instanceof ContinueSignal) {
+            this.runtime.environments.truncateTo(baseDepth);
+            continue;
+          }
+          if (signal instanceof ReturnSignal) this.runtime.environments.truncateTo(baseDepth);
+          throw signal;
+        }
+      }
+    } finally {
+      this.context.exitLoop();
+    }
+    return result;
+  }
+
+  /**
+   * "loop ... end loop" (§36) — unconditional; the same catch structure as
+   * "while"/"repeat" above (so nesting, "continue", and interaction with
+   * "return"/"stop" all work identically), just with no condition to
+   * check and therefore no "natural exit" path — the ONLY way out is a
+   * caught BreakSignal (or a ReturnSignal/StopSignal/error propagating
+   * past it, or a genuine infinite loop if the program never breaks,
+   * exactly like `for (;;)` in any C-family language).
+   */
+  visitLoopExpression(node, env) {
+    this.context.enterLoop();
+
+    try {
+      for (;;) {
+        const baseDepth = this.runtime.environments.depth;
+        const iterationEnv = this.runtime.environments.pushEnvironment(env);
+
+        try {
+          this.executeBlock(node.body.body, iterationEnv);
+          this.runtime.environments.truncateTo(baseDepth);
+        } catch (signal) {
+          if (signal instanceof BreakSignal) {
+            this.runtime.environments.truncateTo(baseDepth);
+            return signal.value;
           }
           if (signal instanceof ContinueSignal) {
             this.runtime.environments.truncateTo(baseDepth);
@@ -329,29 +374,31 @@ export class Interpreter {
     }
   }
 
-  visitBreakStatement(node) {
+  visitBreakStatement(node, env) {
     if (this.context.loopDepth === 0) {
       // Defensive — Semantic Analysis (P018) already rejects this; this
       // path only matters if the interpreter is ever driven without it.
       throw new ParithiRuntimeError(
         'P018',
-        '"break" can only be used inside a "repeat" or "while" loop.',
+        '"break" can only be used inside a "loop", "repeat", or "while" block.',
         this.locationOf(node),
         [],
-        'remove this "break", or move it inside a "repeat"/"while" block.',
+        'remove this "break", or move it inside a "loop"/"repeat"/"while" block.',
       );
     }
-    throw new BreakSignal();
+    // §36 — evaluated exactly once, before the signal unwinds anything.
+    const value = node.value ? this.evaluate(node.value, env) : null;
+    throw new BreakSignal(value);
   }
 
   visitContinueStatement(node) {
     if (this.context.loopDepth === 0) {
       throw new ParithiRuntimeError(
         'P019',
-        '"continue" can only be used inside a "repeat" or "while" loop.',
+        '"continue" can only be used inside a "loop", "repeat", or "while" block.',
         this.locationOf(node),
         [],
-        'remove this "continue", or move it inside a "repeat"/"while" block.',
+        'remove this "continue", or move it inside a "loop"/"repeat"/"while" block.',
       );
     }
     throw new ContinueSignal();

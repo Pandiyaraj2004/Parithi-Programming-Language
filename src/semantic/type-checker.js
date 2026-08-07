@@ -8,14 +8,31 @@
  */
 
 import { NodeType } from '../ast/ast-nodes.js';
-import { DataType, typesCompatible, isNumeric, BUILTIN_SIGNATURES, isValidArgCount, describeArgCount } from './types.js';
+import { DataType, typesCompatible, isNumeric, isOrderable, BUILTIN_SIGNATURES, isValidArgCount, describeArgCount } from './types.js';
 import { SemanticError } from './semantic-error.js';
 import { SourceLocation } from '../errors/index.js';
 
 export class TypeChecker {
-  constructor(filePath, reportError) {
+  /**
+   * @param {string} filePath
+   * @param {(error: import('./semantic-error.js').SemanticError) => void} reportError
+   * @param {(node: object, scope: import('./scope-manager.js').Scope) => string} [inferLoopExpression]
+   *   §36 (Unified Loop Model): `LoopExpression`/`WhileStatement`/
+   *   `RepeatStatement` may now appear in expression position (e.g.
+   *   "hold result = loop ... end loop"), but their *body* is a statement
+   *   block (nested declarations, `if`, `break <value>`, ...) — something
+   *   only the Analyzer, not this stateless-with-respect-to-scope
+   *   TypeChecker, knows how to walk. Rather than duplicating statement
+   *   traversal here, `infer()` delegates to this callback (bound to
+   *   `SemanticAnalyzer.inferLoopExpression` in practice), which reuses
+   *   the Analyzer's own scope/loop-depth machinery and returns the
+   *   loop's resulting DataType (the type of whatever `break <expr>`
+   *   supplies inside it, or Empty if none does).
+   */
+  constructor(filePath, reportError, inferLoopExpression = null) {
     this.filePath = filePath;
     this.reportError = reportError; // (SemanticError) => void
+    this.inferLoopExpression = inferLoopExpression;
   }
 
   locationOf(node) {
@@ -46,6 +63,12 @@ export class TypeChecker {
         return this.inferArrayLiteral(node, scope);
       case NodeType.ARRAY_ACCESS:
         return this.inferArrayAccess(node, scope);
+      case NodeType.LOOP_EXPRESSION:
+      case NodeType.WHILE_STATEMENT:
+      case NodeType.REPEAT_STATEMENT:
+        // §36 — see the constructor's own doc for why this delegates
+        // rather than being handled inline.
+        return this.inferLoopExpression(node, scope);
       default:
         return DataType.UNKNOWN;
     }
@@ -137,6 +160,18 @@ export class TypeChecker {
           `Cannot compare ${leftType} to ${rightType}.`,
           node,
           'comparisons require both sides to be the same kind of value (both numeric, or both the same type).',
+        );
+      } else if (['>', '<', '>=', '<='].includes(op) && (!isOrderable(leftType) || !isOrderable(rightType))) {
+        // Ordering (unlike "=="/"!=", which accept anything via deep
+        // equality) only makes sense for types with a real total order —
+        // Number/Decimal and String. Array and Boolean would otherwise
+        // silently fall through to a meaningless raw JS "<"/">" at runtime
+        // (Array-to-string coercion; true/false-as-1/0 coercion).
+        this.report(
+          'P002',
+          `Cannot order ${leftType} values with "${op}" — ordering only applies to Number, Decimal, or String.`,
+          node,
+          'use "=="/"!=" (or "is"/"is not") to compare these values for equality instead.',
         );
       }
       return DataType.BOOLEAN;

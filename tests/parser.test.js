@@ -206,6 +206,33 @@ describe('Choose / Option / Other', () => {
   test('"end while" closing a "choose" block raises P003', () => {
     assertThrowsCode('choose x\n    option 1\n        say "one"\nend while', 'P003');
   });
+
+  // Production-readiness audit: the lexer always emits "-" as its own
+  // OPERATOR token (never folded into the number literal, by design), so
+  // "option -1" always failed P013 — there was no way to write a negative
+  // option value at all.
+  test('"option -1" parses to a Literal with value -1 (a negative Number option value)', () => {
+    const stmt = parse('choose x\n    option -1\n        say "neg"\nend choose').body[0];
+    assert.equal(stmt.options[0].test.type, NodeType.LITERAL);
+    assert.equal(stmt.options[0].test.value, -1);
+    assert.equal(stmt.options[0].test.valueType, 'Number');
+  });
+
+  test('"option -2.5" parses to a Literal with value -2.5 and valueType Decimal', () => {
+    const stmt = parse('choose x\n    option -2.5\n        say "neg"\nend choose').body[0];
+    assert.equal(stmt.options[0].test.value, -2.5);
+    assert.equal(stmt.options[0].test.valueType, 'Decimal');
+  });
+
+  test('"option -x" (minus before a non-literal) still raises P013 — only a negative NUMBER/DECIMAL is accepted', () => {
+    assertThrowsCode('choose 1\n    option -x\n        say "bad"\nend choose', 'P013');
+  });
+
+  test('a negative and a positive option for the same magnitude are distinct, not conflated', () => {
+    const stmt = parse('choose x\n    option -1\n        say "neg"\n    option 1\n        say "pos"\nend choose').body[0];
+    assert.equal(stmt.options[0].test.value, -1);
+    assert.equal(stmt.options[1].test.value, 1);
+  });
 });
 
 describe('Repeat', () => {
@@ -622,5 +649,111 @@ describe('Arrays (§Arrays)', () => {
 
   test('assigning to the result of a function call raises P011', () => {
     assertThrowsCode('greet() = 10', 'P011');
+  });
+});
+
+describe('Nesting-depth guard (production-readiness audit, P031)', () => {
+  test('1000 nested parenthesized groups raises a clean P031, never a raw RangeError', () => {
+    const source = `say ${'('.repeat(1000)}1${')'.repeat(1000)}`;
+    assert.throws(() => parse(source), (err) => {
+      assert.ok(err instanceof ParseError);
+      assert.equal(err.code, 'P031');
+      assert.match(err.message, /expression nesting depth/);
+      return true;
+    });
+  });
+
+  test('5000 nested "if" blocks raises exactly ONE clean P031 (not a MultiParseError flood from panic-mode retrying the same wall)', () => {
+    let source = '';
+    for (let i = 0; i < 5000; i++) source += 'if true\n';
+    source += 'say "deep"\n';
+    for (let i = 0; i < 5000; i++) source += 'end if\n';
+    assert.throws(() => parse(source), (err) => {
+      assert.ok(err instanceof ParseError); // NOT a MultiParseError — nesting-depth bypasses panic-mode recovery
+      assert.equal(err.code, 'P031');
+      assert.match(err.message, /block nesting depth/);
+      return true;
+    });
+  });
+
+  test('5000 nested box(...) calls raises a clean P031', () => {
+    const source = `hold x = ${'box('.repeat(5000)}1${')'.repeat(5000)}`;
+    assertThrowsCode(source, 'P031');
+  });
+
+  test('moderate nesting (50 levels) well under the limit still parses normally', () => {
+    const source = `hold x = ${'-'.repeat(50)}5\nhold y = ${'('.repeat(50)}1${')'.repeat(50)}`;
+    const program = parse(source);
+    assert.equal(program.body.length, 2);
+  });
+});
+
+describe('Unified Loop Model (§36)', () => {
+  test('a bare "loop ... end loop" parses to a LoopExpression, wrapped as an ExpressionStatement at the top level', () => {
+    const stmt = parse('loop\n    break\nend loop').body[0];
+    assert.equal(stmt.type, NodeType.EXPRESSION_STATEMENT);
+    assert.equal(stmt.expression.type, NodeType.LOOP_EXPRESSION);
+  });
+
+  test('"break" with no value parses with value: null', () => {
+    const stmt = parse('loop\n    break\nend loop').body[0].expression.body.body[0];
+    assert.equal(stmt.type, NodeType.BREAK_STATEMENT);
+    assert.equal(stmt.value, null);
+  });
+
+  test('"break <expression>" parses the expression as the break value', () => {
+    const stmt = parse('loop\n    break 42\nend loop').body[0].expression.body.body[0];
+    assert.equal(stmt.value.type, NodeType.LITERAL);
+    assert.equal(stmt.value.value, 42);
+  });
+
+  test('"break" accepts any expression, not just a literal (identifier, arithmetic, call)', () => {
+    const identBreak = parse('loop\n    break x\nend loop').body[0].expression.body.body[0];
+    assert.equal(identBreak.value.type, NodeType.IDENTIFIER);
+
+    const arithBreak = parse('loop\n    break x + 1\nend loop').body[0].expression.body.body[0];
+    assert.equal(arithBreak.value.type, NodeType.BINARY_EXPRESSION);
+
+    const callBreak = parse('loop\n    break f()\nend loop').body[0].expression.body.body[0];
+    assert.equal(callBreak.value.type, NodeType.FUNCTION_CALL);
+  });
+
+  test('"hold result = loop ... end loop" parses the loop as the declaration\'s value, and correctly continues parsing the next statement', () => {
+    const program = parse('hold result = loop\n    break 1\nend loop\nsay result');
+    assert.equal(program.body.length, 2);
+    assert.equal(program.body[0].type, NodeType.VARIABLE_DECLARATION);
+    assert.equal(program.body[0].value.type, NodeType.LOOP_EXPRESSION);
+    assert.equal(program.body[1].type, NodeType.PRINT_STATEMENT);
+  });
+
+  test('"while"/"repeat" are also valid in expression position, producing the exact same node type as their statement form', () => {
+    const whileExpr = parse('hold r = while true\n    break 1\nend while').body[0].value;
+    assert.equal(whileExpr.type, NodeType.WHILE_STATEMENT);
+
+    const repeatExpr = parse('hold r = repeat 5 as i\n    break i\nend repeat').body[0].value;
+    assert.equal(repeatExpr.type, NodeType.REPEAT_STATEMENT);
+  });
+
+  test('"while"/"repeat" as a bare statement (unchanged, pre-existing form) still parses correctly and continues to the next statement', () => {
+    const program = parse('while true\n    break\nend while\nsay "after"');
+    assert.equal(program.body.length, 2);
+    assert.equal(program.body[0].type, NodeType.WHILE_STATEMENT);
+  });
+
+  test('nested "loop" blocks each parse to their own LoopExpression, and a following statement still parses correctly', () => {
+    const program = parse('loop\n    loop\n        break\n    end loop\n    break\nend loop\nsay "after"');
+    assert.equal(program.body.length, 2);
+    const outer = program.body[0].expression;
+    assert.equal(outer.type, NodeType.LOOP_EXPRESSION);
+    assert.equal(outer.body.body[0].type, NodeType.EXPRESSION_STATEMENT);
+    assert.equal(outer.body.body[0].expression.type, NodeType.LOOP_EXPRESSION);
+  });
+
+  test('a missing "end loop" raises P012', () => {
+    assertThrowsCode('loop\n    break', 'P012');
+  });
+
+  test('"end while" closing a "loop" block raises P003 (blocks must close with the exact keyword that opened them)', () => {
+    assertThrowsCode('loop\n    break\nend while', 'P003');
   });
 });

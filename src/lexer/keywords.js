@@ -1,7 +1,10 @@
 /**
- * Reserved keyword table, per MASTER_DOCUMENT.md §12.1 (26 words total —
- * `stop` added Phase 8 (§15.7), `box` added Phase 9 (§Arrays)). None of
- * these may be used as an identifier — the Semantic Analyzer (Phase 3)
+ * Reserved keyword table, per MASTER_DOCUMENT.md §12.1 (27 words total —
+ * `stop` added Phase 8 (§15.7), `box` added Phase 9 (§Arrays), `loop` added
+ * Phase 16 (§36 — Unified Loop Model): a new, unconditional loop construct
+ * that, unlike `while`/`repeat`, may also be used in expression position,
+ * producing whatever value `break <expression>` supplies inside it). None
+ * of these may be used as an identifier — the Semantic Analyzer (Phase 3)
  * raises P004 for that. Built-in function names (round, random, number,
  * text, type, len, push, pop, insert, remove, sort, reverse, contains) are
  * NOT lexer keywords — they are ordinary identifiers reserved at the
@@ -11,7 +14,7 @@
 export const KEYWORDS = Object.freeze([
   'hold', 'const',
   'if', 'else', 'choose', 'option', 'other', 'end',
-  'repeat', 'while', 'break', 'continue',
+  'repeat', 'while', 'loop', 'break', 'continue',
   'task', 'return', 'stop',
   'say', 'ask',
   'true', 'false', 'empty',

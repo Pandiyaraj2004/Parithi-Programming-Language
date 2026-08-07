@@ -316,3 +316,35 @@ describe('Position Tracking', () => {
     assert.equal(tokens[0].type, TokenType.EOF);
   });
 });
+
+describe('Line Endings', () => {
+  // Production-readiness audit: a bare "\r" (no following "\n" — classic
+  // pre-OS X Mac line endings) previously fell through the same
+  // silent-skip path as plain whitespace, so it never produced a NEWLINE
+  // token at all — every statement in the file collapsed onto one logical
+  // line.
+  test('CRLF ("\\r\\n") produces exactly one NEWLINE per line, same as LF', () => {
+    const withLf = typesOf(tokenize('hold a = 1\nhold b = 2'));
+    const withCrlf = typesOf(tokenize('hold a = 1\r\nhold b = 2'));
+    assert.deepEqual(withCrlf, withLf);
+  });
+
+  test('a bare "\\r" (no "\\n") is now recognized as its own line break', () => {
+    const tokens = tokenize('hold a = 1\rhold b = 2');
+    const secondLineToken = tokens.find((t) => t.lexeme === 'b');
+    assert.equal(secondLineToken.line, 2);
+  });
+
+  test('mixed CR/LF/CRLF line endings in the same file all advance the line number correctly', () => {
+    const tokens = tokenize('hold a = 1\r\nhold b = 2\nhold c = 3\r');
+    assert.equal(tokens.find((t) => t.lexeme === 'a').line, 1);
+    assert.equal(tokens.find((t) => t.lexeme === 'b').line, 2);
+    assert.equal(tokens.find((t) => t.lexeme === 'c').line, 3);
+  });
+
+  test('a bare "\\r" resets the column to 1 for the next line, same as "\\n"', () => {
+    const tokens = tokenize('hold a = 1\rb');
+    const bToken = tokens.find((t) => t.lexeme === 'b');
+    assert.equal(bToken.column, 1);
+  });
+});

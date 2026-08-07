@@ -14,6 +14,397 @@ than each getting its own, which Keep a Changelog treats as one section
 per version) since none bumped `package.json`'s version — that's a
 release-cut decision no phase's brief has asked for yet.
 
+### Phase 16: Unified Loop Model — `loop`, and `break <expression>`
+
+Adds one new, unconditional loop construct, `loop ... end loop`, and
+extends `break` to optionally carry a value (`break <expression>`)
+everywhere `break` already works — letting `loop`/`while`/`repeat` alike
+optionally *produce a value* (whatever `break <expression>` supplies, or
+`Empty` if none does) when used in expression position, e.g. `hold
+result = loop ... end loop`. `npm test` was 929/929 passing immediately
+before this phase; **978/978 passing after** (929 + 49 new tests across
+the parser, semantic analyzer, interpreter, and bytecode/PVM parity
+suites), zero regressions — every pre-existing `while`/`repeat`/`break`/
+`continue` program behaves identically to before.
+
+**Design note**: `while`/`repeat` are unchanged as the recommended,
+idiomatic way to write a conditional/counted loop — `loop` is not a
+replacement for them, it is the one construct that has no built-in exit
+condition of its own and is the primary vehicle for the new
+expression-producing capability. All three loop kinds share one
+underlying model (a per-loop-instance break-value accumulator, tracked
+independently for nested loops) rather than three separate ones.
+
+- **Added:** the `loop` keyword (27 reserved words total, up from 26).
+- **Added:** `BreakStatement.value` (optional, mirroring `ReturnStatement`'s
+  pre-existing optional-value shape exactly) and a new `LoopExpression`
+  AST node.
+- **Changed:** `Parser` — `parsePrimary()` now also accepts `loop`/
+  `while`/`repeat` (reusing the exact same parse functions their existing
+  statement-position dispatch already calls), so each may appear in
+  expression position; fixed a genuine double-consumption bug this
+  surfaced during testing (both the inner parse function and the
+  enclosing statement were each trying to consume the same trailing
+  newline) via a `consumeTrailingEnd` parameter, defaulting to the
+  pre-existing statement-position behavior.
+- **Changed:** `TypeChecker`/`SemanticAnalyzer` — `TypeChecker` gained an
+  injected `inferLoopExpression` callback (bound to a new
+  `SemanticAnalyzer.inferLoopExpression()`) for `LOOP_EXPRESSION`/
+  `WHILE_STATEMENT`/`REPEAT_STATEMENT` in expression position, since a
+  loop's *body* is a statement block only the Analyzer knows how to walk.
+  A new per-loop-instance `breakValueStack` (mirroring the existing
+  `loopDepth` counter's per-function reset) reconciles every
+  `break <expression>` within the same loop to one static `DataType`,
+  reporting `P002` on a genuine mismatch — `Empty` (a bare `break`) never
+  conflicts with a concrete type, matching how `hold x = empty` already
+  defers type-locking elsewhere.
+- **Changed:** `Interpreter` — `BreakSignal` now carries an optional
+  value (mirroring `ReturnSignal`'s shape); `visitWhileStatement`/
+  `visitRepeatStatement` now return that value (`null`/Empty on a natural
+  exit); new `visitLoopExpression()` follows the identical catch
+  structure, with no condition check and therefore no natural-exit path.
+- **Changed:** `BytecodeGenerator` — no new opcodes. Every loop kind now
+  always leaves exactly one result value on the stack, reusing the same
+  convergent-jump shape `and`/`or` short-circuiting already established:
+  a natural exit (condition false / count exhausted) pushes `Empty` at a
+  new intermediate label before falling into the loop's end label; a
+  `break` pushes its value (or `Empty`, if bare) and jumps straight to
+  the end label, skipping that push. The statement-position dispatch for
+  `while`/`repeat` gained one `POP` each (discarding the now-always-
+  present result, exactly like `ExpressionStatement` already does for
+  every other expression); a new `compileLoopExpression()` follows the
+  same shape with no natural-exit path at all. The existing Bytecode
+  Validator accepted every generated program with no changes.
+- **Unchanged, deliberately:** the Native backend. Its existing
+  capability gate already rejects every loop construct (old or new)
+  before reaching code generation, so no change was needed there; the
+  Native IR generator explicitly rejects the *new* capability (`loop`,
+  `break <expression>`, `while`/`repeat` in expression position) with a
+  clean "not yet lowered to IR" error, leaving its pre-existing, tested
+  bare-`break`/`while`/`repeat` IR modeling completely untouched.
+- **Added:** `examples/loops/` — `basic.pr`, `break-value.pr`,
+  `nested.pr`, `continue.pr`, `functions.pr`, `recursion.pr`, each
+  individually run and verified against its documented output.
+- **Added tests:** 8 in `tests/parser.test.js`, 12 in
+  `tests/semantic.test.js`, 13 in `tests/interpreter.test.js`, and 12 in
+  `tests/vm-parity.test.js` (Interpreter/PVM cross-backend parity for
+  every case above) — 45 total (plus a handful of adjacent assertions),
+  covering basic/nested/break-value/continue/functions/recursion/
+  while-and-repeat-as-expressions/natural-exit-to-Empty/multiple-break-
+  paths/runtime-errors-inside-a-loop.
+- **Changed:** `tests/foundation.test.js`'s `KEYWORDS.length` assertion
+  (26 → 27).
+- **Changed:** `MASTER_DOCUMENT.md` (new §36 "Unified Loop Model," the
+  Status line, §12.1's keyword table); `README.md` (Status, Feature
+  List, test counts); this changelog.
+
+### Phase 15: Production Readiness Audit — six real bugs found and fixed
+
+A full end-to-end audit of the Phase 0–14 implementation: every keyword,
+both existing backends and the Native compiler, every Standard Library
+built-in, and every CLI command — each verified by actually running it
+(real `.pr` programs, real generated `.exe` files actually executed, a
+real `npm pack` extracted into a clean directory with zero access to
+this repository), not by reading source and assuming correctness. `npm
+test` was 906/906 passing immediately before this phase; **929/929
+passing after** (906 + 23 new regression tests), zero regressions.
+
+Several things that looked like bugs during testing turned out, on
+verification against source and the existing test suite, to be correct,
+documented behavior — `isEmpty("")` → `false` (§32.3: checks for the
+`empty` type or a zero-length Array, never string length — matches
+`tests/array.test.js`'s own pre-existing assertion), `remove()` returning
+the removed element rather than the array (matches `pop()`'s
+convention), and `contains()`'s Array-or-String polymorphism (Phase
+13a). These are recorded as confirmations in
+`docs/MASTER_DOCUMENT.md` §35.4, not defects.
+
+- **Fixed (High):** deeply nested source (1000+ parenthesized groups, or
+  thousands of nested `if`/`box(...)`) crashed with a raw, unformatted JS
+  `RangeError` — directly violating this project's own "every failure is
+  a clean P0xx diagnostic, never a stack trace" invariant (§18). Added a
+  depth guard (`MAX_NESTING_DEPTH = 200`) at the two recursive choke
+  points every deeply-nested expression or block funnels through
+  (`Parser.parseExpression()`/`parseBlock()`), raising a new error code,
+  **`P031`** ("Maximum nesting depth exceeded"). Capping depth at the
+  parser transitively protects every downstream stage (Semantic
+  Analyzer, Interpreter, Bytecode Generator, Native codegen) for free —
+  none of them need their own guard. A second issue surfaced while
+  fixing the first: panic-mode error recovery re-hit the identical depth
+  wall over and over, producing **9,672** near-duplicate diagnostics for
+  one 5,000-deep test file before this was caught; `P031` now bypasses
+  panic-mode recovery entirely and fails fast with the single, real
+  diagnostic.
+- **Fixed (Medium):** `>`/`<`/`>=`/`<=` only checked mutual
+  type-*compatibility*, not whether the type is actually orderable —
+  `box(1,2) > box(3,4)` and `true > false` both passed Semantic Analysis
+  silently and fell through to a meaningless raw JS `<`/`>` at runtime
+  (Array-to-string coercion; Boolean-to-number coercion). Added
+  `isOrderable()` (`semantic/types.js`): only Number, Decimal, and String
+  may be ordered; Array and Boolean now raise `P002` with a specific
+  message. `==`/`!=` (deep equality, which legitimately applies to any
+  type) are completely unaffected.
+- **Fixed (Medium):** `option -1` in a `choose` block always failed
+  `P013` — the lexer always emits `-` as its own `OPERATOR` token (by
+  design), so there was no way to write a negative `option` value at
+  all. `parseOptionClause()` now recognizes `-` immediately followed by
+  a `NUMBER`/`DECIMAL` token and folds it into a single negated
+  `Literal` node (not a `UnaryExpression` — `option.test` is read
+  directly as a Literal elsewhere, by `analyzer.js` and
+  `bytecode-generator.js`, so this keeps that exact shape everywhere).
+- **Fixed (Low):** a name colliding with a reserved/built-in name (`P004`)
+  left nothing declared in scope, so every later reference to that same
+  name independently raised its own spurious `P001` — one mistake
+  reported as a cascade of unrelated-looking diagnostics.
+  `checkNameAvailable()` now declares an `Unknown`-typed placeholder
+  after reporting `P004`, matching how `P014` (a genuine duplicate)
+  already avoids cascading.
+- **Fixed (Low):** a bare `\r` line ending (no following `\n` — classic
+  pre-OS X Mac text files) fell through the same silent-skip path as
+  plain whitespace, so it never produced a `NEWLINE` token — an entire
+  file collapsed onto one logical line. The lexer's `\r` case now checks
+  for a following `\n` (CRLF — absorbed exactly as before, zero behavior
+  change) and otherwise emits its own `NEWLINE`.
+- **Fixed (Low, documentation):** `pari --version`'s "Backends" line
+  still only listed the Interpreter and Bytecode Generator, never
+  mentioning the Native x86-64 backend (Phase 13) or the Adaptive
+  Execution Engine (Phase 14). Added `nativeSupport()`/
+  `adaptiveEngineSupport()` (the same live-detection pattern as the
+  existing `bytecodeSupport()`/`pvmSupport()`) and a new "Execution" line.
+- **Removed (cleanup):** `src/interpreter/builtins/array.js`'s own
+  `contains()` — dead code, shadowed since Phase 13a by the polymorphic
+  version in `stdlib/array/index.js` (the one actually registered) — and
+  its now-unused `deepEquals` import.
+- **Added:** `ERROR_CODES.P031` (`src/errors/error-codes.js`, `ErrorPhase.PARSING`).
+- **Added tests:** 4 in `tests/parser.test.js` (nesting-depth guard: 1000
+  nested parens, 5000 nested `if`, 5000 nested `box(...)`, moderate
+  50-level nesting still works) + 4 more (negative `option` literals:
+  Number, Decimal, still-rejects-non-numeric, distinct-from-positive); 9
+  in `tests/semantic.test.js` (5 ordering-restriction cases, 2
+  negative-`option` semantic cases, 2 P004-cascade cases); 1 in
+  `tests/interpreter.test.js` (negative `option` actually executes
+  correctly); 4 in `tests/lexer.test.js` (CRLF/bare-CR/mixed line
+  endings); 1 in `tests/cli.test.js` (`--version` architecture
+  completeness) — 23 total.
+- **Changed:** `tests/foundation.test.js`'s `ERROR_CODES` count assertion
+  (30 → 31).
+- **Changed:** `MASTER_DOCUMENT.md` (new §35 "Production Readiness
+  Audit," the Status line, the §18 error-code table extended to
+  P028–P031 — which had drifted out of sync since Phase 13a/13/14 each
+  added codes without updating this specific table); `README.md`
+  (Status, error-code count, folder structure, test counts); this
+  changelog.
+
+### Phase 14: Adaptive Execution Engine — automatic backend selection
+
+Adds `src/backend/` — a small capability-analysis layer in front of the
+three already-coexisting, independently-complete backends (Interpreter,
+Bytecode + PVM, Native x86-64), so a bare `pari <file.pr>` picks the best
+one automatically instead of always hardcoding the Interpreter. `npm test`
+was 855/855 passing immediately before this work; **906/906 passing
+after** (855 + 51 new: 20 capability/selector unit tests + 31 real
+subprocess CLI tests), zero regressions.
+
+**The core rule, enforced structurally, not just by convention**: backend
+selection happens via pure, static AST inspection BEFORE any execution
+begins — never by partially running one backend, catching a failure, and
+retrying on another. For a language with side-effecting statements
+(`say`), a "try native, fall back to bytecode on failure" design would
+risk duplicating output if native printed some lines before hitting an
+unsupported construct. `src/backend/capability.js`'s three checks
+(`checkNativeCapability`/`checkBytecodeCapability`/
+`checkInterpreterCapability`) never execute, compile to bytecode, generate
+IR, emit x86-64, or write a PE file — `checkNativeCapability` specifically
+reuses the exact same AST-level gate `native-codegen.js`'s pre-existing
+`extractSayText()` already ran (same feature/reason wording, same
+`NativeCompileError`/P030 shape) and stops there, which is what keeps the
+check cheap per this phase's own performance requirement.
+
+**Honest scope note**: the Bytecode Generator (Phase 10) has a compiler
+for every AST node type the Parser can produce, so
+`checkBytecodeCapability` reports `supported: true` for every program that
+reaches it today — meaning automatic selection can currently only ever
+resolve to Native or Bytecode in practice. The Interpreter fallback branch
+of the priority list is real, implemented, and unit-tested (via synthetic
+evaluation lists in `tests/backend/capability.test.js`, since no real
+program can trigger it under today's actual capability facts), and remains
+directly reachable via `--backend interpreter` — this is a forward-looking,
+correctly-ordered design, not a decoration.
+
+- **Added:** `src/backend/capability.js` — `checkNativeCapability`,
+  `checkBytecodeCapability`, `checkInterpreterCapability`, and the
+  `BACKENDS` priority list (`native` → `bytecode` → `interpreter`).
+- **Added:** `src/backend/selector.js` — `selectBackend(program, filePath)`
+  (evaluates all three, returns the winner plus every evaluation, for
+  `--explain-backend`'s report), `evaluateBackend(id, program, filePath)`
+  (single forced-backend lookup), and `selectFromEvaluations(evaluations)`
+  (the pure "first supported wins" decision, factored out so it's
+  unit-testable against synthetic outcomes independent of today's real
+  capability facts).
+- **Changed:** `src/cli/commands.js` — the bare `pari <file.pr>` path
+  (previously always `runProgram()` → the Interpreter, unconditionally) is
+  now `runWithBackend()`: lexes/parses/analyzes exactly once, decides on
+  exactly one backend (automatically via `selectBackend()`, or forced via
+  `--backend`), then dispatches to one of three execute-helpers —
+  `executeInterpreterProgram()` (unchanged Interpreter behavior),
+  `executeBytecodeProgram()` (bytecode generated in memory, run on the
+  PVM, reusing the existing `executeBytecode()` helper `--run-bytecode`
+  already used), or `executeNative()` (genuinely new: runs the real
+  `compileProgramToNative()` + `buildPE64Executable()` pipeline, writes the
+  `.exe` to a throwaway `os.tmpdir()` directory — never the project
+  folder — spawns it as a real child process with `stdio: 'inherit'`,
+  forwards its exit code, and deletes the temp directory afterward).
+  `stop <n>` exit-code semantics and every backend's own exit-code scheme
+  are preserved exactly per-backend.
+- **Added:** `pari <file.pr> --backend native|bytecode|interpreter` — forces
+  one specific backend for the `run` mode. Never silently falls back: an
+  unsupported forced backend prints the real capability-check diagnostic
+  (e.g. the actual `NativeCompileError`/P030 for a forced-but-unsupported
+  Native run) and exits `ExitCode.COMPILER_ERROR`, without trying a
+  different backend.
+- **Added:** `pari --explain-backend <file.pr>` — a new dedicated CLI mode
+  (like `--native`/`--bytecode`), analysis-only: lexes/parses/analyzes,
+  runs `selectBackend()`, and prints every backend's SUPPORTED/UNSUPPORTED
+  verdict (with the specific unsupported construct/reason for Native) plus
+  which one was selected and why — never executes the program.
+- **Changed:** `pari <file.pr> --verbose` (automatic and forced selection
+  only) now also prints `Backend: <name>` before the program's own output,
+  in addition to its pre-existing `✓ Completed in Nms.` trailer (unchanged,
+  now also printed after the native execution path).
+- **Changed:** `src/cli/args.js` — `--explain-backend` added to
+  `FLAG_MODES` (leading-form dedicated mode, like `--native`); `--backend
+  <name>` added as a value-taking modifier (same calling convention as
+  `-o <path>` — extracted before mode dispatch, valid anywhere in argv,
+  validated against `native`/`bytecode`/`interpreter` with a clean
+  `CliUsageError` for anything else or a missing value).
+- **Added:** `tests/backend/capability.test.js` (20 tests) — every
+  capability check against real parsed/analyzed programs (including the
+  exact `NativeCompileError` feature/reason wording for each rejection
+  category), the `BACKENDS` list shape, `selectBackend()`/
+  `evaluateBackend()` against real programs, and `selectFromEvaluations()`
+  against synthetic evaluation lists covering all three selection outcomes
+  (native-selected, bytecode-fallback, interpreter-fallback).
+- **Added:** `tests/backend/cli.test.js` (31 tests) — real `spawnSync`
+  subprocess tests: automatic selection (native-selected and
+  bytecode-selected cases, banner position, no banner without
+  `--verbose`), cross-backend parity (Native/Bytecode/Interpreter agree on
+  stdout and exit code for the same program, including `stop <n>`),
+  forced `--backend` success and no-fallback-on-failure (confirming zero
+  program output on a forced-and-rejected run), `--explain-backend`'s
+  report content and never-executes guarantee, CLI-usage-error handling
+  for a bad/missing `--backend` value, and every pre-existing example
+  program still producing identical output under automatic selection as
+  under `--backend interpreter`.
+- **Changed:** `tests/foundation.test.js` — `parseArgs`'s exact-shape
+  assertion updated to include the new `backend: null` default field.
+- **Changed:** `src/cli/screens.js` (`--help` text), `MASTER_DOCUMENT.md`
+  (new §34 "Adaptive Execution Engine," plus the Status line), `README.md`
+  (Status, Feature List, CLI Reference, Project Architecture diagram and
+  folder structure, test counts, and a corrected Known Limitations entry —
+  the old "the PVM is not the default" bullet was no longer accurate once
+  automatic selection existed).
+- **Explicitly not done**, per this phase's own scope: no new language
+  keywords, modules, OOP, exception handling, async/await,
+  garbage-collector redesign, new type system, or new syntax — the
+  Interpreter, Bytecode Generator, PVM, Optimizer, and Native compiler are
+  exactly as capable as they were at the end of Phase 13.
+
+### Phase 13 (native): a real three-address-code IR + 6-pass IR Optimizer for the native backend
+
+Adds `src/native/ir/` — a proper intermediate representation and
+optimizer between the AST and the native x86-64 backend, closing the gap
+this phase's own earlier entry (below) explicitly called out as the
+recommended next step. `npm test` was 802/802 passing immediately before
+this work; **855/855 passing after** (802 + 53 new: 23 IR-generation
+tests + 30 IR-optimizer tests), zero regressions — every existing
+Lexer/Parser/AST/Semantic Analyzer/Interpreter/Bytecode/PVM/Optimizer/
+Standard-Library/native test still passes unchanged.
+
+**Scope, stated honestly**: the IR and optimizer now genuinely model and
+correctly optimize variables, arithmetic, comparisons, booleans, unary
+negation, control flow (`if`/`else`/`while`/`repeat`/`break`/`continue`),
+and functions (parameters, `return`, recursion, nested calls) — but only
+`say` with String literal arguments is actually lowered to x86-64 machine
+code today, exactly as before this change. The remaining gap is
+specifically in `ir-to-x86-64.js`'s own coverage of the IR shapes the
+generator/optimizer already fully support, not in the IR/optimizer
+design itself — see MASTER_DOCUMENT.md §33.14 for the recommended order
+to close it.
+
+- **Added:** `src/native/ir/ir-nodes.js` — the IR data structures
+  (`IRProgram`/`IRFunction`/`BasicBlock`/`IRInstruction`, `temp`/`var`/
+  `const` operands) — three-address code with explicit basic blocks and
+  terminators (`JUMP`/`BRANCH`/`RETURN`), no SSA/phi nodes (deliberately,
+  per this phase's own "don't over-engineer the first version" rule).
+- **Added:** `src/native/ir/ir-generator.js` — `IRGenerator`, structurally
+  mirroring `src/bytecode/bytecode-generator.js`'s own proven approach
+  (one method per AST node type, a `CompileScope` chain for
+  shadowing-safe slot mangling, a `loopStack` for `break`/`continue`,
+  predeclare-then-compile for `task`s) re-derived for a three-address-code
+  shape instead of a stack machine, rather than inventing a second,
+  independently-verified translation. `and`/`or` are lowered to real
+  short-circuit branches across basic blocks (never an eager instruction)
+  — evaluating the right-hand side eagerly would be an actual behavior
+  change (a skipped side effect or avoided runtime error).
+- **Added:** `src/native/ir/ir-printer.js` — human-readable IR text
+  (`pari --native --emit-ir`/`--emit-optimized-ir`).
+- **Added:** `src/native/ir/optimizer/` — six independently-testable,
+  independently enable/disable-able passes, run in a fixed order to a
+  convergence fixed point (matching `src/optimizer/optimizer.js`'s own
+  convergence-loop shape): Constant Folding, Constant Propagation,
+  Algebraic Simplification, Dead Code Elimination, Unreachable Code
+  Elimination, Redundant Temporary Elimination. Every pass's own class
+  doc leads with its safety rule — most importantly, Dead Code
+  Elimination never removes a `CALL` or `PRINT` regardless of whether its
+  result is used, since a function may have side effects the IR can't
+  prove absent.
+- **A real bug, caught by tracing an actual optimizer run, not by code
+  review:** Dead Code Elimination originally tracked "which temps are
+  used" in ONE set for the whole program — but a virtual register's id is
+  only unique WITHIN the function that defines it (each function's own
+  temp counter restarts at 0), so a `t0` used in `$main` incorrectly
+  protected an unrelated, genuinely-dead `t0` in a different function
+  from removal. This was a safe-direction bug (under-optimization, never
+  a correctness break — a left-in dead instruction can't change program
+  behavior), but still a real, silent defect; fixed by scoping the "used
+  temps" tracking per function. A regression test for exactly this shape
+  is in `tests/native/ir-optimizer.test.js`.
+- **Changed:** `src/native/codegen/native-codegen.js` — now a two-stage
+  pipeline: its own pre-existing AST-level "is this within the
+  native-compilable subset" gate runs first, UNCHANGED (same exact
+  `NativeCompileError` messages the existing 16 unsupported-feature tests
+  already check), and only once a program passes it does the module
+  additionally run it through `IRGenerator` → `optimize()` → the new
+  `src/native/codegen/ir-to-x86-64.js` (extracted from the old inline
+  x86-64-building logic, now reading from optimized IR instead of
+  re-walking the AST — the actual "code generator consumes the optimized
+  IR" requirement, satisfied for real for the currently-emittable subset).
+- **Added:** `--emit-ir`, `--emit-optimized-ir`, `--optimizer-stats` CLI
+  flags (`src/cli/args.js`/`commands.js`/`screens.js`) — additive to the
+  existing `--native`/`-o`/`--ir`/`--asm` surface, composing freely with
+  all of them; every pre-existing native CLI command is unaffected.
+- **Added:** `tests/native/ir.test.js` (23 tests) — AST→IR generation for
+  every construct the brief's §3 lists (variables, every arithmetic/
+  comparison/boolean/unary operator, nested expressions, `if`/`else`,
+  `while`, `repeat`, break/continue in nested loops, functions,
+  parameters, local variable scoping, return values, recursion, nested
+  calls) plus confirmation that `choose`/`stop`/`box` raise a clear error
+  rather than silently-wrong IR. `tests/native/ir-optimizer.test.js` (30
+  tests) — every one of the 6 passes tested both in isolation (via the
+  optimizer's config option) and as part of the full default pipeline,
+  matching every one of the brief's own worked examples exactly
+  (`x = 10 + 20` → `30`; `y = x + 0` → `y = x`; the side-effecting-call
+  safety rule; nested-expression full folding; control flow and
+  recursion surviving optimization correctly).
+- **Changed:** `MASTER_DOCUMENT.md` — §33.4 marked superseded (original
+  text preserved for history) and eight new subsections added (§33.15
+  "What Is IR and Why," §33.16 "AST vs. IR," §33.17 "IR Instruction
+  Format," §33.18 "AST → IR Conversion," §33.19 "The IR Optimizer,"
+  §33.20 "IR → Target Code," §33.21 "How to Debug IR," §33.22 "How to Add
+  a New Optimization Pass"), plus updates to the Status line and §33.14's
+  "Recommended Next Phase" (items 1-3's own IR groundwork marked done);
+  `README.md`; this changelog.
+
 ### Phase 13 (native): a genuine, minimal Windows x86-64 native compiler foundation
 
 **Scope, stated honestly up front:** this is a real, tested, actually-executed

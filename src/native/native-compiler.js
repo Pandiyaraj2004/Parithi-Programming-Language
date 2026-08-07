@@ -40,10 +40,13 @@ export function compileNative(source, filePath) {
       return { success: false, diagnostics: analysis.diagnostics };
     }
 
-    const { textBytes, textFixups, imports, stringConstants, ir, asmListing } = compileProgramToNative(program, filePath);
+    const {
+      textBytes, textFixups, imports, stringConstants, ir, asmListing,
+      threeAddressIR, optimizedIR, optimizerStatistics,
+    } = compileProgramToNative(program, filePath);
     const exe = buildPE64Executable({ textBytes, textFixups, imports, stringConstants });
 
-    return { success: true, exe, ir, asmListing };
+    return { success: true, exe, ir, asmListing, threeAddressIR, optimizedIR, optimizerStatistics };
   } catch (err) {
     if (!isReportable(err)) throw err; // a genuine internal bug — never swallow it as a clean diagnostic
     return { success: false, diagnostics: [err] };

@@ -60,10 +60,16 @@ function collectChildren(node) {
       add('condition', node.condition);
       add('body', node.body);
       break;
+    case NodeType.LOOP_EXPRESSION:
+      add('body', node.body);
+      break;
     case NodeType.TASK_DECLARATION:
       add('body', node.body);
       break;
     case NodeType.RETURN_STATEMENT:
+      if (node.value) add('value', node.value);
+      break;
+    case NodeType.BREAK_STATEMENT:
       if (node.value) add('value', node.value);
       break;
     case NodeType.STOP_STATEMENT:

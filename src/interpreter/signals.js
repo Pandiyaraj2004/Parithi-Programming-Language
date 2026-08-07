@@ -8,7 +8,12 @@
  * carry, just a control signal and (for return) a value.
  */
 
-export class BreakSignal {}
+/** `value` is null for a bare "break" — §36 (Unified Loop Model): the value a "loop"/"while"/"repeat" evaluates to when used as an expression. */
+export class BreakSignal {
+  constructor(value = null) {
+    this.value = value;
+  }
+}
 
 export class ContinueSignal {}
 

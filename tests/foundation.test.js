@@ -12,8 +12,8 @@ import { parseArgs } from '../src/cli/args.js';
 import { CliUsageError } from '../src/cli/cli-error.js';
 import { isKeyword, KEYWORDS } from '../src/lexer/keywords.js';
 
-test('ERROR_CODES contains all thirty documented codes (P001-P030)', () => {
-  assert.equal(Object.keys(ERROR_CODES).length, 30);
+test('ERROR_CODES contains all thirty-one documented codes (P001-P031)', () => {
+  assert.equal(Object.keys(ERROR_CODES).length, 31);
 });
 
 test('CompilerError formats with code, message, location, and hint', () => {
@@ -35,20 +35,22 @@ test('ParithiRuntimeError carries its error code', () => {
   assert.equal(error.code, 'P006');
 });
 
-test('KEYWORDS contains exactly 26 reserved words, including choose/option/other/is/stop/box', () => {
-  assert.equal(KEYWORDS.length, 26);
+test('KEYWORDS contains exactly 27 reserved words, including choose/option/other/is/stop/box/loop', () => {
+  assert.equal(KEYWORDS.length, 27);
   assert.ok(isKeyword('choose'));
   assert.ok(isKeyword('option'));
   assert.ok(isKeyword('other'));
   assert.ok(isKeyword('is'));
   assert.ok(isKeyword('stop'));
   assert.ok(isKeyword('box'));
+  assert.ok(isKeyword('loop'));
   assert.ok(!isKeyword('score'));
 });
 
 test('parseArgs treats a plain filename as run mode', () => {
   assert.deepEqual(parseArgs(['hello.pr']), {
-    mode: 'run', file: 'hello.pr', verbose: false, optimize: false, asm: false, ir: false, outputPath: null, programArgs: [],
+    mode: 'run', file: 'hello.pr', verbose: false, optimize: false, asm: false, ir: false,
+    emitIr: false, emitOptimizedIr: false, optimizerStats: false, outputPath: null, backend: null, programArgs: [],
   });
 });
 

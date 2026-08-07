@@ -23,6 +23,14 @@
  *     leading works automatically (they're in FLAG_MODES like any other
  *     mode flag), and `TRAILING_MODE_FLAGS` below additionally recognizes
  *     the trailing form without requiring two different spellings.
+ *
+ * Phase 14 (Adaptive Execution Engine) adds two more, following the
+ * existing conventions above rather than inventing new ones:
+ *   - `--explain-backend` is a dedicated mode, exactly like `--native`/
+ *     `--bytecode` (leading form only) — analysis-only, never executes.
+ *   - `--backend <name>` is a value-taking modifier for the `run` mode,
+ *     the same calling convention as `-o <path>` (may appear anywhere,
+ *     consumes the following argv token as its value).
  */
 
 import { CliUsageError } from './cli-error.js';
@@ -39,10 +47,15 @@ const FLAG_MODES = Object.freeze({
   '--stats': 'stats',
   '--disassemble': 'disassemble',
   '--native': 'native',
+  '--explain-backend': 'explain-backend',
   '--version': 'version',
   '--help': 'help',
   '-h': 'help',
 });
+
+// Phase 14 (Adaptive Execution Engine) — the only three backend names
+// `--backend` accepts, matching capability.js's BACKENDS list exactly.
+const VALID_BACKENDS = new Set(['native', 'bytecode', 'interpreter']);
 
 // Flags that stand alone — they never take a following file argument.
 const STANDALONE_MODES = new Set(['help', 'version']);
@@ -56,16 +69,24 @@ const TRAILING_MODE_FLAGS = new Set(['--stats', '--disassemble']);
 // may appear anywhere in argv and only affect what `--native` does with
 // its output (§14 of the native-compiler brief: "do not expose unstable
 // internal details as the default user experience" — --asm/--ir are
-// opt-in inspection, never the default).
-const BOOLEAN_MODIFIER_FLAGS = ['--verbose', '--optimize', '--asm', '--ir'];
+// opt-in inspection, never the default). The IR-optimizer brief's own
+// --emit-ir/--emit-optimized-ir are additive, separate flags (not a
+// rename of --ir) — --ir is the pre-existing short "what did the compiler
+// understand" summary; --emit-ir/--emit-optimized-ir show the real
+// three-address-code IR (ir-to-x86-64.js's actual input) before/after
+// the IR Optimizer pipeline.
+const BOOLEAN_MODIFIER_FLAGS = ['--verbose', '--optimize', '--asm', '--ir', '--emit-ir', '--emit-optimized-ir', '--optimizer-stats'];
 
-const KNOWN_FLAGS = [...Object.keys(FLAG_MODES), ...BOOLEAN_MODIFIER_FLAGS, '-o'];
+const KNOWN_FLAGS = [...Object.keys(FLAG_MODES), ...BOOLEAN_MODIFIER_FLAGS, '-o', '--backend'];
 
 export function parseArgs(argv) {
   const verbose = argv.includes('--verbose');
   const optimize = argv.includes('--optimize');
   const asm = argv.includes('--asm');
   const ir = argv.includes('--ir');
+  const emitIr = argv.includes('--emit-ir');
+  const emitOptimizedIr = argv.includes('--emit-optimized-ir');
+  const optimizerStats = argv.includes('--optimizer-stats');
   let rest = argv.filter((arg) => !BOOLEAN_MODIFIER_FLAGS.includes(arg));
 
   // `-o <path>` (Phase 13, §13: native output path) — the one value-taking
@@ -81,7 +102,29 @@ export function parseArgs(argv) {
     rest = [...rest.slice(0, outputFlagIndex), ...rest.slice(outputFlagIndex + 2)];
   }
 
-  const modifiers = { verbose, optimize, asm, ir, outputPath };
+  // `--backend <name>` (Phase 14, Adaptive Execution Engine) — forces a
+  // specific backend for the bare `pari <file.pr>` run path instead of
+  // letting BackendSelector choose automatically; extracted the same way
+  // as `-o` above so it can appear anywhere in argv. `null` means
+  // "automatic selection," the default.
+  let backend = null;
+  const backendFlagIndex = rest.indexOf('--backend');
+  if (backendFlagIndex !== -1) {
+    const value = rest[backendFlagIndex + 1];
+    if (!value) {
+      throw new CliUsageError('Missing backend name after "--backend".', 'Usage: pari <file.pr> --backend native|bytecode|interpreter');
+    }
+    if (!VALID_BACKENDS.has(value)) {
+      throw new CliUsageError(
+        `Unknown backend "${value}".`,
+        'Valid backends: native, bytecode, interpreter.',
+      );
+    }
+    backend = value;
+    rest = [...rest.slice(0, backendFlagIndex), ...rest.slice(backendFlagIndex + 2)];
+  }
+
+  const modifiers = { verbose, optimize, asm, ir, emitIr, emitOptimizedIr, optimizerStats, outputPath, backend };
 
   if (rest.length === 0) {
     throw new CliUsageError(

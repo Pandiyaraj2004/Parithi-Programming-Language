@@ -43,6 +43,7 @@ export const ERROR_CODES = Object.freeze({
   P028: { name: 'Math domain error', phase: ErrorPhase.INTERPRETATION },
   P029: { name: 'String index out of range', phase: ErrorPhase.INTERPRETATION },
   P030: { name: 'Unsupported native compilation feature', phase: ErrorPhase.NATIVE_COMPILATION },
+  P031: { name: 'Maximum nesting depth exceeded', phase: ErrorPhase.PARSING },
 });
 
 export function describeErrorCode(code) {

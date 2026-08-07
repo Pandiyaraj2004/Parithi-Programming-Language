@@ -160,6 +160,36 @@ describe('Type Inference & Mismatch', () => {
     const result = analyze('hold x = not 5');
     assert.deepEqual(codesOf(result), ['P002']);
   });
+
+  // Production-readiness audit: ordering ("<"/">"/"<="/">=") was only
+  // checked for mutual type-compatibility, not for actually being an
+  // orderable type — so two Arrays or two Booleans passed silently and
+  // fell through to a meaningless raw JS "<"/">" at runtime.
+  test('ordering two Arrays with ">" raises P002 (Array has no defined order)', () => {
+    const result = analyze('hold a = box(1,2)\nhold b = box(3,4)\nsay a > b');
+    assert.deepEqual(codesOf(result), ['P002']);
+  });
+
+  test('ordering two Booleans with "<" raises P002 (Boolean has no defined order)', () => {
+    const result = analyze('say true < false');
+    assert.deepEqual(codesOf(result), ['P002']);
+  });
+
+  test('ordering two Numbers/Decimals/Strings is still valid — only Array/Boolean are rejected', () => {
+    assert.equal(analyze('say 5 > 3').success, true);
+    assert.equal(analyze('say 5.5 <= 6').success, true);
+    assert.equal(analyze('say "apple" < "banana"').success, true);
+  });
+
+  test('equality ("==") on Arrays/Booleans is unaffected by the ordering restriction', () => {
+    assert.equal(analyze('hold a = box(1,2)\nhold b = box(1,2)\nsay a == b').success, true);
+    assert.equal(analyze('say true == false').success, true);
+  });
+
+  test('ordering a parameter (statically Unknown) is still allowed — the restriction never fires on Unknown/Empty', () => {
+    const result = analyze('task f(x)\n    return x > 5\nend task\nsay f(10)');
+    assert.equal(result.success, true);
+  });
 });
 
 describe('Function Calls & Argument Counts', () => {
@@ -361,6 +391,16 @@ describe('Choose Validation', () => {
     const source = ['hold day = 2', 'choose day', '    option "Monday"', '        say "bad"', 'end choose'].join('\n');
     assert.deepEqual(codesOf(analyze(source)), ['P002']);
   });
+
+  test('a negative option value ("option -1") raises no diagnostics against a Number discriminant', () => {
+    const source = ['hold x = -1', 'choose x', '    option -1', '        say "neg"', 'end choose'].join('\n');
+    assert.equal(analyze(source).success, true);
+  });
+
+  test('duplicate negative option values raise P007, same as any other duplicate', () => {
+    const source = ['choose -1', '    option -1', '        say "first"', '    option -1', '        say "second"', 'end choose'].join('\n');
+    assert.deepEqual(codesOf(analyze(source)), ['P007']);
+  });
 });
 
 describe('Reserved Keywords / Built-in Name Collisions', () => {
@@ -385,6 +425,21 @@ describe('Reserved Keywords / Built-in Name Collisions', () => {
       assert.equal(firstCode, 'P011');
       return true;
     });
+  });
+
+  // Production-readiness audit: P004 originally left NOTHING declared in
+  // scope (unlike P014, where the name genuinely is already declared from
+  // the earlier valid statement) — so every later reference to the same
+  // colliding name independently raised its own spurious P001, turning one
+  // mistake into a noisy, misleading multi-error report.
+  test('a built-in-name collision reports exactly ONE diagnostic (P004), even when the name is referenced again afterward', () => {
+    const result = analyze('hold len = 10\nsay len\nsay len + 1');
+    assert.deepEqual(codesOf(result), ['P004']);
+  });
+
+  test('the placeholder registered after a P004 collision is Unknown-typed, so it never trips a further, unrelated type error', () => {
+    const result = analyze('hold len = 10\nsay len + "not a number"');
+    assert.deepEqual(codesOf(result), ['P004']);
   });
 });
 
@@ -595,5 +650,73 @@ describe('Arrays (§Arrays)', () => {
       assert.equal(firstCode, 'P011');
       return true;
     });
+  });
+});
+
+describe('Unified Loop Model (§36)', () => {
+  test('"break" outside any loop raises P018 (same code as before, now also covering "loop")', () => {
+    assert.deepEqual(codesOf(analyze('break')), ['P018']);
+  });
+
+  test('"continue" outside any loop raises P019', () => {
+    assert.deepEqual(codesOf(analyze('continue')), ['P019']);
+  });
+
+  test('"break <expr>" outside any loop still raises P018 — the value does not exempt it', () => {
+    assert.deepEqual(codesOf(analyze('break 5')), ['P018']);
+  });
+
+  test('a bare "loop" with "break" inside raises no diagnostics', () => {
+    assert.equal(analyze('loop\n    break\nend loop').success, true);
+  });
+
+  test('"hold result = loop ... end loop" infers result\'s type from "break <expr>"\'s value', () => {
+    const result = analyze('hold result = loop\n    break 42\nend loop');
+    assert.equal(result.success, true);
+    assert.equal(result.globalScope.resolve('result').dataType, 'Number');
+  });
+
+  test('a loop with no "break <expr>" (only bare "break", or none at all) infers Empty', () => {
+    const bare = analyze('hold result = loop\n    break\nend loop');
+    assert.equal(bare.globalScope.resolve('result').dataType, 'Empty');
+  });
+
+  test('mismatched "break" value types in the SAME loop raise P002', () => {
+    const source = 'hold cond = true\nhold r = loop\n    if cond\n        break 5\n    else\n        break "text"\n    end if\nend loop';
+    assert.deepEqual(codesOf(analyze(source)), ['P002']);
+  });
+
+  test('a bare "break" mixed with "break <expr>" in the same loop does not conflict (Empty is compatible with anything)', () => {
+    const source = 'hold cond = true\nhold r = loop\n    if cond\n        break 5\n    else\n        break\n    end if\nend loop';
+    const result = analyze(source);
+    assert.equal(result.success, true);
+    assert.equal(result.globalScope.resolve('r').dataType, 'Number');
+  });
+
+  test('nested loops track break values independently — the outer result reflects only the OUTER loop\'s own "break"', () => {
+    const source = 'hold r = loop\n    hold inner = loop\n        break 10\n    end loop\n    break 20\nend loop';
+    const result = analyze(source);
+    assert.equal(result.success, true);
+    assert.equal(result.globalScope.resolve('r').dataType, 'Number');
+  });
+
+  test('"while"/"repeat" used as expressions also infer their result type from "break <expr>"', () => {
+    const whileResult = analyze('hold x = 0\nhold r = while x < 10\n    x = x + 1\n    if x == 5\n        break x\n    end if\nend while');
+    assert.equal(whileResult.success, true);
+    assert.equal(whileResult.globalScope.resolve('r').dataType, 'Number');
+
+    const repeatResult = analyze('hold r = repeat 5 as i\n    if i == 3\n        break i\n    end if\nend repeat');
+    assert.equal(repeatResult.success, true);
+    assert.equal(repeatResult.globalScope.resolve('r').dataType, 'Number');
+  });
+
+  test('"break"/"continue" inside a loop nested in a task refer only to that task\'s own loop, exactly as for while/repeat', () => {
+    const source = 'while true\n    task f()\n        break\n    end task\nend while';
+    assert.deepEqual(codesOf(analyze(source)), ['P018']);
+  });
+
+  test('"break" inside a loop nested in a task, where the task itself also has its own loop, is valid', () => {
+    const source = 'while true\n    task f()\n        loop\n            break\n        end loop\n    end task\n    break\nend while';
+    assert.equal(analyze(source).success, true);
   });
 });

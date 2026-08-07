@@ -27,7 +27,7 @@ import { ASTBuilder } from '../ast/ast-builder.js';
 import { NodeType } from '../ast/ast-nodes.js';
 
 const STATEMENT_STARTERS = new Set([
-  'hold', 'const', 'if', 'choose', 'repeat', 'while',
+  'hold', 'const', 'if', 'choose', 'repeat', 'while', 'loop',
   'break', 'continue', 'task', 'return', 'say',
 ]);
 
@@ -39,11 +39,38 @@ const LITERAL_TYPES = new Set([
   TokenType.EMPTY,
 ]);
 
+// A production-readiness audit found that source with very deep nesting
+// (e.g. 1000+ parenthesized groups, or 5000+ nested "if"/"box(...)") blows
+// the real JS call stack with a raw, unformatted RangeError instead of a
+// clean Parithi diagnostic — directly violating this project's own "every
+// failure surfaces as a P0xx diagnostic, never a stack trace" invariant
+// (§18). MAX_NESTING_DEPTH is checked at the two recursive choke points
+// every deeply-nested expression or block ultimately funnels back through
+// (parseExpression/parseBlock below), well below the observed real crash
+// threshold (500-1000 on the reference machine) so the guard always fires
+// first — and capping AST depth here transitively protects every
+// downstream stage (Semantic Analyzer, Interpreter, Bytecode Generator,
+// Native codegen) from ever receiving a tree deep enough to crash them too.
+const MAX_NESTING_DEPTH = 200;
+
 export class Parser {
   constructor(tokens, filePath = '<source>') {
     this.tokens = new TokenStream(tokens);
     this.context = new ParseContext(filePath);
     this.filePath = filePath;
+    this.expressionDepth = 0;
+    this.blockDepth = 0;
+  }
+
+  /** Raises P031 — shared by parseExpression()/parseBlock()'s depth guards below. */
+  raiseNestingDepthError(what) {
+    const token = this.tokens.peek();
+    throw new ParseError(
+      'P031',
+      `Maximum ${what} nesting depth (${MAX_NESTING_DEPTH}) exceeded.`,
+      this.context.locationOf(token),
+      { hint: 'this program is nested far more deeply than any realistic Parithi program needs to be — break it into smaller expressions, blocks, or functions.' },
+    );
   }
 
   // ---------------------------------------------------------------------
@@ -62,6 +89,13 @@ export class Parser {
         this.skipNewlines();
       } catch (err) {
         if (!(err instanceof ParseError)) throw err;
+        // A nesting-depth error (P031) is not a local, one-statement typo
+        // panic-mode recovery can usefully skip past — the rest of the
+        // file is still just as deeply nested, so synchronize()-and-retry
+        // would just re-hit the same wall over and over (observed: ~9,700
+        // near-duplicate diagnostics for one root cause on a 5,000-deep
+        // test file). Fail fast with the single, real diagnostic instead.
+        if (err.code === 'P031') throw err;
         errors.push(err);
         this.synchronize();
       }
@@ -233,6 +267,25 @@ export class Parser {
     const optionToken = this.tokens.advance();
     const literalToken = this.tokens.peek();
 
+    // A negative numeric literal, e.g. "option -1" — the lexer always
+    // emits "-" as its own OPERATOR token (never folded into the number,
+    // by design — see lexer.js), so a bare LITERAL_TYPES check alone can
+    // never accept it. A production-readiness audit found this made
+    // negative option values entirely unwritable. `option.test` is read
+    // directly as a Literal node elsewhere (analyzer.js's
+    // `option.test.value`/`.valueType`, bytecode-generator.js's
+    // compileExpression) — so this folds the negation into a new Literal
+    // with a negated value, rather than wrapping it in a UnaryExpression,
+    // to keep that same simple shape every existing consumer expects.
+    if (this.check(TokenType.OPERATOR, '-') && [TokenType.NUMBER, TokenType.DECIMAL].includes(this.tokens.peek(1).type)) {
+      const minusToken = this.tokens.advance();
+      const numberToken = this.tokens.advance();
+      const test = ASTBuilder.literal(-numberToken.value, numberToken.type === TokenType.DECIMAL ? 'Decimal' : 'Number', minusToken.line, minusToken.column);
+      this.expectStatementEnd();
+      const body = this.parseBlock(['option', 'other', 'end']);
+      return ASTBuilder.optionClause(test, body, optionToken.line, optionToken.column);
+    }
+
     if (!LITERAL_TYPES.has(literalToken.type)) {
       throw new ParseError(
         'P013',
@@ -252,7 +305,19 @@ export class Parser {
     return ASTBuilder.optionClause(test, body, optionToken.line, optionToken.column);
   }
 
-  parseRepeatStatement() {
+  /**
+   * `consumeTrailingEnd` (§36): true when called from statement position
+   * (parseStatement()'s own dispatch — the existing, default behavior,
+   * unchanged), false when called from expression position (parsePrimary()
+   * — e.g. "hold result = repeat ... end repeat"). In expression position,
+   * the ENCLOSING construct (parseExpressionStatement/
+   * parseVariableDeclaration/etc.) already calls expectStatementEnd() of
+   * its own right after parseExpression() returns — consuming it again
+   * here too would eat the *next* statement's leading newline, leaving
+   * nothing for that outer call to find (a genuine bug caught by testing
+   * "hold result = loop ... end loop" followed by another statement).
+   */
+  parseRepeatStatement(consumeTrailingEnd = true) {
     const repeatToken = this.tokens.advance();
     const count = this.parseExpression();
 
@@ -265,24 +330,48 @@ export class Parser {
     this.expectStatementEnd();
     const body = this.parseBlock(['end']);
     this.expectEnd('repeat');
-    this.expectStatementEnd();
+    if (consumeTrailingEnd) this.expectStatementEnd();
     return ASTBuilder.repeatStatement(count, counterName, body, repeatToken.line, repeatToken.column);
   }
 
-  parseWhileStatement() {
+  parseWhileStatement(consumeTrailingEnd = true) {
     const whileToken = this.tokens.advance();
     const condition = this.parseExpression();
     this.expectStatementEnd();
     const body = this.parseBlock(['end']);
     this.expectEnd('while');
-    this.expectStatementEnd();
+    if (consumeTrailingEnd) this.expectStatementEnd();
     return ASTBuilder.whileStatement(condition, body, whileToken.line, whileToken.column);
   }
 
+  /**
+   * "loop ... end loop" (§36) — unconditional, no count/condition; exited
+   * only via "break"/"return"/"stop". The fundamental loop construct: it
+   * carries no built-in exit condition of its own, so — unlike "while"/
+   * "repeat" — reaching "end loop" by normal fall-through is impossible;
+   * every real program using "loop" must contain a "break" (or "return"/
+   * "stop") somewhere in its body, or it runs forever, exactly like `for
+   * (;;)`/`while (true)` in any C-family language. See the class doc on
+   * parseRepeatStatement() just above for `consumeTrailingEnd`.
+   */
+  parseLoopExpression(consumeTrailingEnd = true) {
+    const loopToken = this.tokens.advance();
+    this.expectStatementEnd();
+    const body = this.parseBlock(['end']);
+    this.expectEnd('loop');
+    if (consumeTrailingEnd) this.expectStatementEnd();
+    return ASTBuilder.loopExpression(body, loopToken.line, loopToken.column);
+  }
+
+  /** "break" [expression] (§36) — mirrors parseReturnStatement's own optional-value pattern exactly. */
   parseBreakStatement() {
     const token = this.tokens.advance();
+    let value = null;
+    if (!this.check(TokenType.NEWLINE) && !this.tokens.isAtEnd()) {
+      value = this.parseExpression();
+    }
     this.expectStatementEnd();
-    return ASTBuilder.breakStatement(token.line, token.column);
+    return ASTBuilder.breakStatement(value, token.line, token.column);
   }
 
   parseContinueStatement() {
@@ -351,16 +440,22 @@ export class Parser {
   // ---------------------------------------------------------------------
 
   parseBlock(stopKeywords) {
-    this.skipNewlines();
-    const startToken = this.tokens.peek();
-    const body = [];
-
-    while (!this.tokens.isAtEnd() && !this.isBlockStop(stopKeywords)) {
-      body.push(this.parseStatement());
+    if (this.blockDepth >= MAX_NESTING_DEPTH) this.raiseNestingDepthError('block');
+    this.blockDepth++;
+    try {
       this.skipNewlines();
-    }
+      const startToken = this.tokens.peek();
+      const body = [];
 
-    return ASTBuilder.block(body, startToken.line, startToken.column);
+      while (!this.tokens.isAtEnd() && !this.isBlockStop(stopKeywords)) {
+        body.push(this.parseStatement());
+        this.skipNewlines();
+      }
+
+      return ASTBuilder.block(body, startToken.line, startToken.column);
+    } finally {
+      this.blockDepth--;
+    }
   }
 
   isBlockStop(stopKeywords) {
@@ -411,7 +506,13 @@ export class Parser {
   // ---------------------------------------------------------------------
 
   parseExpression() {
-    return this.parseOr();
+    if (this.expressionDepth >= MAX_NESTING_DEPTH) this.raiseNestingDepthError('expression');
+    this.expressionDepth++;
+    try {
+      return this.parseOr();
+    } finally {
+      this.expressionDepth--;
+    }
   }
 
   parseOr() {
@@ -599,6 +700,21 @@ export class Parser {
     }
     if (token.type === TokenType.KEYWORD && token.value === 'box') {
       return this.parseArrayLiteral();
+    }
+    // §36 (Unified Loop Model): "loop"/"while"/"repeat" are also valid in
+    // expression position — e.g. "hold result = loop ... end loop" — in
+    // addition to their existing, unchanged statement-position dispatch in
+    // parseStatement() below. Reusing the SAME parse functions either way
+    // means there is exactly one AST shape per loop kind, regardless of
+    // which position it was parsed from.
+    if (token.type === TokenType.KEYWORD && token.value === 'loop') {
+      return this.parseLoopExpression(false);
+    }
+    if (token.type === TokenType.KEYWORD && token.value === 'while') {
+      return this.parseWhileStatement(false);
+    }
+    if (token.type === TokenType.KEYWORD && token.value === 'repeat') {
+      return this.parseRepeatStatement(false);
     }
     if (token.type === TokenType.PUNCTUATION && token.value === '(') {
       return this.parseGroupedExpression();

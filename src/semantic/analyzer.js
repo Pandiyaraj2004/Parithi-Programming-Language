@@ -34,9 +34,15 @@ export class SemanticAnalyzer {
     this.filePath = filePath;
     this.diagnostics = [];
     this.scopes = new ScopeManager();
-    this.typeChecker = new TypeChecker(filePath, (error) => this.diagnostics.push(error));
+    this.typeChecker = new TypeChecker(filePath, (error) => this.diagnostics.push(error), this.inferLoopExpression.bind(this));
     this.loopDepth = 0;
     this.functionReturnStack = [];
+    // §36 (Unified Loop Model) — one frame per currently-open loop
+    // (innermost last), tracking the DataType `break <expr>` has
+    // established for THAT loop specifically. A nested loop's own frame
+    // is what keeps its break values from ever affecting an outer loop's
+    // result — see visitBreak()/inferLoopExpression() below.
+    this.breakValueStack = [];
   }
 
   analyze() {
@@ -111,6 +117,24 @@ export class SemanticAnalyzer {
           ? `"${name}" is a built-in function name — choose a different name.`
           : `"${name}" is a reserved keyword — choose a different name.`,
       );
+      // A production-readiness audit found this one root cause cascading
+      // into a spurious, unrelated-looking second diagnostic: since
+      // nothing gets declared here, EVERY later reference to `name`
+      // independently fails with its own P001 "not declared" — unlike
+      // P014 below, where the name genuinely IS already in scope (from
+      // the earlier, valid declaration), so later references resolve
+      // fine and no cascade happens. Declaring a permissive placeholder
+      // (Unknown-typed, so it never trips a further type-mismatch either)
+      // gives later references something to resolve against, matching
+      // P014's own "one root cause, one diagnostic" behavior.
+      scope.declare(createSymbol({
+        name,
+        kind: 'variable',
+        dataType: DataType.UNKNOWN,
+        scopeLevel: scope.level,
+        location: this.locationOf(node),
+        mutable: true,
+      }));
       return false;
     }
     if (scope.hasOwn(name)) {
@@ -146,7 +170,7 @@ export class SemanticAnalyzer {
       case NodeType.WHILE_STATEMENT:
         return this.visitWhileStatement(node, scope);
       case NodeType.BREAK_STATEMENT:
-        return this.visitBreak(node);
+        return this.visitBreak(node, scope);
       case NodeType.CONTINUE_STATEMENT:
         return this.visitContinue(node);
       case NodeType.TASK_DECLARATION:
@@ -304,60 +328,104 @@ export class SemanticAnalyzer {
   }
 
   visitRepeatStatement(node, scope) {
-    const countType = this.typeChecker.infer(node.count, scope);
-    if (countType !== DataType.UNKNOWN && !isNumeric(countType)) {
-      this.report(
-        'P002',
-        `"repeat" count must be numeric, got ${countType}.`,
-        node.count,
-        'use a Number or Decimal expression here, e.g. "repeat 5" or "repeat total".',
-      );
-    }
-
-    const repeatScope = this.scopes.enter('repeat');
-
-    if (node.counterName && this.checkNameAvailable(node.counterName, node, repeatScope)) {
-      repeatScope.declare(createSymbol({
-        name: node.counterName,
-        kind: 'variable',
-        dataType: DataType.NUMBER,
-        scopeLevel: repeatScope.level,
-        location: this.locationOf(node),
-        mutable: true,
-      }));
-    }
-
-    this.loopDepth++;
-    this.visitBlockStatements(node.body.body, repeatScope);
-    this.loopDepth--;
-    this.scopes.exit();
+    this.inferLoopExpression(node, scope); // return value unused — "repeat" as a bare statement never reads its result
   }
 
   visitWhileStatement(node, scope) {
-    const conditionType = this.typeChecker.infer(node.condition, scope);
-    if (conditionType !== DataType.UNKNOWN && conditionType !== DataType.BOOLEAN) {
-      this.report(
-        'P002',
-        `A "while" condition must be Boolean, got ${conditionType}.`,
-        node.condition,
-        'use a comparison or logical expression here, e.g. "count <= 5".',
-      );
-    }
-
-    const whileScope = this.scopes.enter('while');
-    this.loopDepth++;
-    this.visitBlockStatements(node.body.body, whileScope);
-    this.loopDepth--;
-    this.scopes.exit();
+    this.inferLoopExpression(node, scope); // return value unused — "while" as a bare statement never reads its result
   }
 
-  visitBreak(node) {
+  /**
+   * §36 (Unified Loop Model) — the one place that actually walks a loop's
+   * body and determines its result type, for all three loop kinds
+   * ("loop"/"while"/"repeat"), whether reached as a bare statement
+   * (visitRepeatStatement/visitWhileStatement above, which discard the
+   * return value) or in expression position (via the `inferLoopExpression`
+   * callback TypeChecker.infer() was given — see type-checker.js's own
+   * class doc). Each kind does its own condition/count validation first,
+   * then shares the identical body-walking/break-tracking logic below.
+   */
+  inferLoopExpression(node, scope) {
+    let loopScope;
+
+    if (node.type === NodeType.WHILE_STATEMENT) {
+      const conditionType = this.typeChecker.infer(node.condition, scope);
+      if (conditionType !== DataType.UNKNOWN && conditionType !== DataType.BOOLEAN) {
+        this.report(
+          'P002',
+          `A "while" condition must be Boolean, got ${conditionType}.`,
+          node.condition,
+          'use a comparison or logical expression here, e.g. "count <= 5".',
+        );
+      }
+      loopScope = this.scopes.enter('while');
+    } else if (node.type === NodeType.REPEAT_STATEMENT) {
+      const countType = this.typeChecker.infer(node.count, scope);
+      if (countType !== DataType.UNKNOWN && !isNumeric(countType)) {
+        this.report(
+          'P002',
+          `"repeat" count must be numeric, got ${countType}.`,
+          node.count,
+          'use a Number or Decimal expression here, e.g. "repeat 5" or "repeat total".',
+        );
+      }
+      loopScope = this.scopes.enter('repeat');
+      if (node.counterName && this.checkNameAvailable(node.counterName, node, loopScope)) {
+        loopScope.declare(createSymbol({
+          name: node.counterName,
+          kind: 'variable',
+          dataType: DataType.NUMBER,
+          scopeLevel: loopScope.level,
+          location: this.locationOf(node),
+          mutable: true,
+        }));
+      }
+    } else {
+      loopScope = this.scopes.enter('loop'); // NodeType.LOOP_EXPRESSION — unconditional, nothing to validate up front
+    }
+
+    this.loopDepth++;
+    this.breakValueStack.push({ resultType: null });
+    this.visitBlockStatements(node.body.body, loopScope);
+    const { resultType } = this.breakValueStack.pop();
+    this.loopDepth--;
+    this.scopes.exit();
+
+    // No "break <expr>" (or no "break" at all — e.g. every exit is via
+    // "return"/"stop", or a "loop" that never terminates) ever ran: the
+    // loop's value is Empty, matching how an un-assigned `hold x = empty`
+    // "has no value yet" elsewhere in the language — no new value type
+    // invented for this.
+    return resultType ?? DataType.EMPTY;
+  }
+
+  visitBreak(node, scope) {
     if (this.loopDepth === 0) {
       this.report(
         'P018',
-        '"break" can only be used inside a "repeat" or "while" loop.',
+        '"break" can only be used inside a "loop", "repeat", or "while" block.',
         node,
-        'remove this "break", or move it inside a "repeat"/"while" block.',
+        'remove this "break", or move it inside a "loop"/"repeat"/"while" block.',
+      );
+      return;
+    }
+
+    // A bare "break" contributes Empty to the same reconciliation a
+    // "break <expr>" would — Empty is always typesCompatible() with
+    // anything (§13.1), so mixing a bare "break" with a "break <expr>" in
+    // the same loop is never a false-positive type error, exactly like
+    // `hold x = empty` never conflicts with whatever `x` is assigned next.
+    const valueType = node.value ? this.typeChecker.infer(node.value, scope) : DataType.EMPTY;
+    const frame = this.breakValueStack.at(-1);
+
+    if (frame.resultType === null || frame.resultType === DataType.EMPTY) {
+      frame.resultType = valueType; // first break in this loop — lock; a later concrete type still refines an Empty-only lock
+    } else if (!typesCompatible(frame.resultType, valueType)) {
+      this.report(
+        'P002',
+        `This loop's "break" values disagree: ${frame.resultType} first, now ${valueType}.`,
+        node,
+        'every "break <expression>" in the same loop must produce the same kind of value.',
       );
     }
   }
@@ -366,9 +434,9 @@ export class SemanticAnalyzer {
     if (this.loopDepth === 0) {
       this.report(
         'P019',
-        '"continue" can only be used inside a "repeat" or "while" loop.',
+        '"continue" can only be used inside a "loop", "repeat", or "while" block.',
         node,
-        'remove this "continue", or move it inside a "repeat"/"while" block.',
+        'remove this "continue", or move it inside a "loop"/"repeat"/"while" block.',
       );
     }
   }
@@ -391,7 +459,9 @@ export class SemanticAnalyzer {
     }
 
     const outerLoopDepth = this.loopDepth;
+    const outerBreakValueStack = this.breakValueStack;
     this.loopDepth = 0; // break/continue in a nested task refers only to ITS OWN loops
+    this.breakValueStack = []; // §36 — likewise, a nested task's own loops track their own break values independently
 
     const returnInfo = { types: [], sawUnknown: false };
     this.functionReturnStack.push(returnInfo);
@@ -400,6 +470,7 @@ export class SemanticAnalyzer {
 
     this.functionReturnStack.pop();
     this.loopDepth = outerLoopDepth;
+    this.breakValueStack = outerBreakValueStack;
     this.scopes.exit();
 
     if (symbol) {

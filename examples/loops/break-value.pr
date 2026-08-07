@@ -1,0 +1,17 @@
+# "break <expression>" lets a loop produce a value — "loop" then becomes
+# usable wherever any other expression is, e.g. as the value of "hold".
+
+hold items = box(3, 7, 10, 15)
+hold i = 0
+
+hold result = loop
+    hold item = items[i]
+
+    if item == 10
+        break item
+    end if
+
+    i = i + 1
+end loop
+
+say result

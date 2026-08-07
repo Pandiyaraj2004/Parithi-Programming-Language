@@ -5,7 +5,7 @@
 **Project Name:** Parithi
 **Tagline:** A Human-Friendly Programming Language Designed for Readability and Simplicity
 **Target Runtime:** Node.js (JavaScript)
-**Status:** v1.0 — stable release, now including Arrays, a Bytecode Generator, a Parithi Virtual Machine, a Bytecode Optimizer, (partially) a Standard Library, and (as a genuine but minimal foundation) a Native Compiler. Implementation complete and fully verified against this specification (see `docs/PHASE8_AUDIT_REPORT.md`), followed by a Phase 8.5 release-readiness pass (packaging/documentation only — see `CHANGELOG.md`), a Phase 9 language addition (`box` arrays, [§28](#28-arrays-phase-9) — the first language-surface change since the Phase 8 audit), a Phase 10 new backend ([§29](#29-bytecode-phase-10) — AST → Parithi Bytecode `.pbc`), a Phase 11 second execution engine ([§30](#30-parithi-virtual-machine-phase-11) — the PVM executes that bytecode directly; the Tree-Walking Interpreter is untouched and remains the default), a Phase 12 optimization pipeline ([§31](#31-bytecode-optimizer-phase-12) — an additive post-processing stage between the Generator and the Validator/PVM that shrinks a program's bytecode without changing what it does), a Phase 13 Standard Library ([§32](#32-standard-library-phase-13) — in progress; sub-phase 13a shipped: Math/String/Array/Type/System, ~45 new built-ins, all additive; File/JSON/DateTime/HTTP remain in later sub-phases), and a Phase 13 Native Compiler ([§33](#33-native-compiler-phase-13-x86-64-backend) — a **third** execution backend, AST → hand-written x86-64 machine code → a real, standalone Windows PE `.exe`; today compiles only `say` with String literals, proven by actually executing generated `.exe` files — see §33.9 for the honest supported/unsupported boundary). All backends are proven — not just asserted — to produce identical output for identical programs (§30.11, §31.10, §32.12, §33.8).
+**Status:** v1.0 — stable release, now including Arrays, a Bytecode Generator, a Parithi Virtual Machine, a Bytecode Optimizer, (partially) a Standard Library, and (as a genuine but minimal foundation) a Native Compiler. Implementation complete and fully verified against this specification (see `docs/PHASE8_AUDIT_REPORT.md`), followed by a Phase 8.5 release-readiness pass (packaging/documentation only — see `CHANGELOG.md`), a Phase 9 language addition (`box` arrays, [§28](#28-arrays-phase-9) — the first language-surface change since the Phase 8 audit), a Phase 10 new backend ([§29](#29-bytecode-phase-10) — AST → Parithi Bytecode `.pbc`), a Phase 11 second execution engine ([§30](#30-parithi-virtual-machine-phase-11) — the PVM executes that bytecode directly; the Tree-Walking Interpreter is untouched and remains the default), a Phase 12 optimization pipeline ([§31](#31-bytecode-optimizer-phase-12) — an additive post-processing stage between the Generator and the Validator/PVM that shrinks a program's bytecode without changing what it does), a Phase 13 Standard Library ([§32](#32-standard-library-phase-13) — in progress; sub-phase 13a shipped: Math/String/Array/Type/System, ~45 new built-ins, all additive; File/JSON/DateTime/HTTP remain in later sub-phases), and a Phase 13 Native Compiler ([§33](#33-native-compiler-phase-13-x86-64-backend) — a **third** execution backend, AST → a real three-address-code IR + 6-pass IR Optimizer ([§33.15](#3315-what-is-ir-and-why-parithi-uses-one) onward) → hand-written x86-64 machine code → a real, standalone Windows PE `.exe`; today compiles only `say` with String literals, proven by actually executing generated `.exe` files — see §33.9 for the honest supported/unsupported boundary), and a Phase 14 Adaptive Execution Engine ([§34](#34-adaptive-execution-engine-phase-14) — a bare `pari <file.pr>` now automatically selects the best of the three coexisting backends via static capability analysis, never trial execution; `--backend <name>` forces one explicitly with no silent fallback, and `--explain-backend` reports the analysis without running the program), and a Phase 15 Production Readiness Audit ([§35](#35-production-readiness-audit-phase-15) — every keyword, backend, Standard Library built-in, and CLI command verified by actually running it; six real bugs found and fixed, including a new `P031` parser recursion guard, all with regression tests; a real `npm pack` extracted and run in a clean directory with zero access to this repository), and a Phase 16 Unified Loop Model ([§36](#36-unified-loop-model-phase-16) — a new, unconditional `loop` construct plus `break <expression>`, extending `while`/`repeat`/`loop` alike to optionally produce a value, usable in expression position; purely additive — every pre-existing `while`/`repeat`/`break`/`continue` program is unaffected, and the native backend's capability boundary does not move). All backends are proven — not just asserted — to produce identical output for identical programs (§30.11, §31.10, §32.12, §33.8, §34.7, §35.4, §36.6).
 **Document Owner:** Language Architecture Team
 **Last Updated:** 2026-08-07
 
@@ -534,12 +534,12 @@ Blank lines and indentation are ignored by the lexer/parser beyond their role as
 
 ### 12.1 Reserved Keywords
 
-The original plan's core list (20 words), plus the `is` operator keyword identified in [§2](#2-design-corrections-applied-to-the-original-plan), plus `choose` / `option` / `other` added for the switch statement ([§15.2](#152-choose-switch-statement)), plus `stop` added in Phase 8 ([§15.7](#157-stop-statement)), plus `box` added in Phase 9 ([§28](#28-arrays-phase-9)) — 26 total:
+The original plan's core list (20 words), plus the `is` operator keyword identified in [§2](#2-design-corrections-applied-to-the-original-plan), plus `choose` / `option` / `other` added for the switch statement ([§15.2](#152-choose-switch-statement)), plus `stop` added in Phase 8 ([§15.7](#157-stop-statement)), plus `box` added in Phase 9 ([§28](#28-arrays-phase-9)), plus `loop` added in Phase 16 ([§36](#36-unified-loop-model-phase-16)) — 27 total:
 
 ```
 hold      const
 if        else      choose    option    other     end
-repeat    while     break     continue
+repeat    while     loop      break     continue
 task      return    stop
 say       ask
 true      false     empty
@@ -1129,7 +1129,7 @@ Three failure modes exist **only** at runtime, since no static check could ever 
 
 ## 18. Error Handling and Error Codes
 
-All errors are surfaced with a stable code, a one-line description, and the source line where possible. Errors are grouped by the phase that raises them: **Lexing** (P008–P010), **Parsing** (P003, P011–P013), **Semantic Analysis** (P001, P002, P004, P005, P007, P014–P019, P025, P026), and **Interpretation** (P006, P020–P024, P026, P027). The Interpreter also defensively re-raises P001, P002, P005, P017, P018, P019, P025, P026 at runtime — see [§17.7](#177-defensive-runtime-checks). P025/P026 are listed under both phases deliberately: each is caught statically whenever the relevant type is knowable from source text alone, and defensively at runtime whenever it isn't (most commonly, an Unknown-typed function parameter) — see [§28.6](#286-array-error-codes) for the full breakdown.
+All errors are surfaced with a stable code, a one-line description, and the source line where possible. Errors are grouped by the phase that raises them: **Lexing** (P008–P010), **Parsing** (P003, P011–P013, P031), **Semantic Analysis** (P001, P002, P004, P005, P007, P014–P019, P025, P026), **Interpretation** (P006, P020–P024, P026–P029), and **Native Compilation** (P030). The Interpreter also defensively re-raises P001, P002, P005, P017, P018, P019, P025, P026 at runtime — see [§17.7](#177-defensive-runtime-checks). P025/P026 are listed under both phases deliberately: each is caught statically whenever the relevant type is knowable from source text alone, and defensively at runtime whenever it isn't (most commonly, an Unknown-typed function parameter) — see [§28.6](#286-array-error-codes) for the full breakdown.
 
 | Code | Name | Phase | Trigger Example |
 |---|---|---|---|
@@ -1160,6 +1160,10 @@ All errors are surfaced with a stable code, a one-line description, and the sour
 | **P025** | Cannot index non-array value | Semantic Analysis (statically), Interpretation (defensively) | `hold x = 5` then `x[0]` — see [§28.6](#286-array-error-codes) |
 | **P026** | Array element type mismatch | Semantic Analysis (statically), Interpretation (defensively) | `box(1, "two", 3)`, or `push(nums, "oops")` on a `box` of Numbers — see [§28.6](#286-array-error-codes) |
 | **P027** | Negative array index | Interpretation | `nums[-1]` — see [§28.6](#286-array-error-codes) |
+| **P028** | Math domain error | Interpretation | `sqrt(-4)`, `log(0)` — see [§32.1](#321-math-library) |
+| **P029** | String index out of range | Interpretation | `substring("hi", 2, 10)` — see [§32.2](#322-string-library) |
+| **P030** | Unsupported native compilation feature | Native Compilation | Any AST node or `say` argument the x86-64 backend doesn't compile yet — see [§33.11](#3311-error-codes) |
+| **P031** | Maximum nesting depth exceeded | Parsing | Source nested far more deeply than any realistic program needs (e.g. 1000+ parenthesized groups, or thousands of nested `if`/`box(...)`) — added by the production-readiness audit after this was found to crash with a raw JS `RangeError` instead of a clean diagnostic; see [§35.3](#353-parser-recursion-guard-p031) |
 
 ### Example Error Output
 
@@ -3122,6 +3126,15 @@ project's "no premature abstraction" convention.
 
 ### 33.4 Native IR
 
+**Superseded by a real three-address-code IR + optimizer — see §33.15
+onward.** (This subsection's original text described a two-operation
+placeholder, `Say`/`Exit`, kept below only as history; `compileNative()`'s
+`ir` field / `pari --native --ir` still expose that original short
+summary unchanged, but the actual code generator now consumes a genuine
+IR — `pari --native --emit-ir`/`--emit-optimized-ir`, §33.19.)
+
+<details><summary>Original text (pre-IR-pipeline), preserved for history</summary>
+
 The intermediate representation between the AST and the x86-64 backend,
 today, is exactly two operation kinds (see `compileProgramToNative()`'s
 own `ir` output, inspectable via `pari --native --ir`, §33.10):
@@ -3149,6 +3162,8 @@ for `Const`, `Load`/`Store`, `BinaryOp`, `Label`, `Jump`/`JumpIfFalse`,
 real `native-ir/` module (separate from `native-codegen.js`'s AST walk)
 becomes justified, since there will be enough IR node variety for a
 walker to meaningfully operate over instead of two hardcoded cases.
+
+</details>
 
 ### 33.5 x86-64 Code Generation
 
@@ -3421,22 +3436,32 @@ native is faster until measured").
 
 ### 33.14 Recommended Next Phase
 
-In the order that keeps each step's own IR/codegen additions small and
-independently testable (matching this phase's own "only mark a feature
-native-supported after it has dedicated tests" rule):
+**Updated — items 1-3's own IR groundwork is now done (§33.15 onward);
+what remains for each is specifically the x86-64 CODEGEN, not IR design:**
 
-1. **Variables and arithmetic** — requires a real `Const`/`Load`/`Store`/
-   `BinaryOp` IR (§33.4's "growing the IR" note), a decided Number/Decimal
-   representation (§33.6), and local-variable stack slots (extending
-   §33.5's stack-frame design, which currently has none).
-2. **Control flow** (`if`/`while`/`repeat`/`break`/`continue`) — needs
-   `Label`/`Jump`/`JumpIfFalse` IR and conditional-jump encodings
-   (`Jcc`) in `x86-64-encoder.js`.
-3. **Functions and recursion** — a real call stack discipline for
-   user-defined `task`s (prologue/epilogue, parameter passing beyond the
-   four fixed native-runtime calls that exist today, a return-value
-   convention) — the brief's own worked example (`fact(5)` → `120`) is a
-   good acceptance test for this step specifically.
+1. **Variables and arithmetic** — the IR already fully models this
+   (`STORE`/variable operands/`ADD`/`SUB`/.../`EQ`/etc. — §33.16) and the
+   IR Optimizer already optimizes it (§33.18). What's missing is
+   `ir-to-x86-64.js` actually emitting real instructions for these IR
+   shapes: a decided Number/Decimal representation (§33.6) and
+   local-variable stack slots (extending §33.5's stack-frame design,
+   which currently has none, since there are no local variables to store
+   yet in the native-emittable subset).
+2. **Control flow** (`if`/`while`/`repeat`/`break`/`continue`) — the IR
+   already fully models this as real basic blocks with `JUMP`/`BRANCH`
+   terminators (§33.16); what's missing is conditional-jump encodings
+   (`Jcc`) in `x86-64-encoder.js` and a codegen pass that walks multiple
+   IR blocks (today's `ir-to-x86-64.js` only ever sees `$main`'s single
+   block, since Stage 1's AST gate never lets a branching program reach
+   the IR generator with a "compile this" intent — see §33.3/native-codegen.js's own class doc).
+3. **Functions and recursion** — the IR already compiles every `task`
+   into its own `IRFunction` with real parameters and `RETURN` (§33.16);
+   what's missing is a real x86-64 call stack discipline (prologue/
+   epilogue, parameter passing beyond the four fixed native-runtime calls
+   that exist today, a return-value convention) — the brief's own worked
+   example (`fact(5)` → `120`) is a good acceptance test for this step
+   specifically, and is already a passing IR-level test (§33.17) waiting
+   on x86-64 codegen to make it a passing *native execution* test too.
 4. **String operations, Arrays, and the Standard Library** — each needs
    its own native-runtime design (§33.6/§33.9's built-in matrix) once a
    real memory model (allocation/ownership) exists, which items 1-3 don't
@@ -3446,3 +3471,724 @@ Not recommended before the above: broadening OS/CPU target support
 (§33.13) — every additional target multiplies the PE-writer-equivalent
 and encoder-equivalent work for a language subset that still can't do
 arithmetic natively.
+
+### 33.15 What Is IR, and Why Parithi Uses One
+
+An **Intermediate Representation** is a program form that sits between
+the AST (what the parser produced — still shaped like Parithi's own
+grammar: `IfStatement`, `WhileStatement`, nested expression trees) and
+the target machine code (x86-64 instructions — flat, register-and-memory-
+oriented, nothing resembling `if`/`while` at all). Compiling straight
+from the AST to machine code (which `native-codegen.js` did before this
+IR pipeline existed, and still effectively does for the currently-
+emittable subset — §33.16's "why a real IR, even for a tiny subset" note)
+works for something as simple as "print a string," but breaks down the
+moment the compiler needs to **optimize** — constant folding, dead-code
+elimination, and every other pass in §33.18 all need to see a program in
+a shape where "compute this value" and "use it here" are separate,
+individually-inspectable steps, not baked directly into nested AST
+subtrees. Three-address code (§33.16) gives exactly that: every
+operation names its inputs and output explicitly (`t2 = ADD t0, t1`), so
+an optimizer pass can reason about, rewrite, or delete one instruction at
+a time without having to understand Parithi's grammar at all.
+
+### 33.16 AST vs. IR
+
+| | AST | IR |
+|---|---|---|
+| Shape | A tree, mirroring source syntax (`BinaryExpression{left, operator, right}`) | A flat list of instructions per basic block, three-address-code style |
+| Produced by | The Parser | `src/native/ir/ir-generator.js`, from a semantically-valid AST |
+| Knows about | Parithi's grammar (`if`/`while`/`say`/...) | Nothing about grammar — only `CONST`/`ADD`/`STORE`/`CALL`/`JUMP`/`BRANCH`/`RETURN`/... (`IrOp`, `src/native/ir/ir-nodes.js`) |
+| Control flow | Nested statement lists (`Block.body`) | Explicit basic blocks (`BasicBlock`) linked by `JUMP`/`BRANCH` terminators — no nesting, just a graph |
+| Values | Expression subtrees, re-evaluated wherever they appear | Named virtual registers (`temp`s, e.g. `t3`) or variables (`var`, mangled — same slot-mangling scheme `src/bytecode/bytecode-generator.js` already uses for shadowing), each computed once |
+| Consumed by | The Semantic Analyzer, the Bytecode Generator, the Interpreter, `ir-generator.js` itself | `src/native/ir/optimizer/` (optimization) and `ir-to-x86-64.js` (code generation) |
+
+**Optimization safety is the reason for every design choice here** — every
+virtual register (`temp`) is defined exactly once and consumed only
+within the SAME basic block it's defined in (never across a `JUMP`/
+`BRANCH`); only named variables (`var` operands, via `STORE`) carry a
+value across blocks. This single invariant is what makes every optimizer
+pass in §33.18 simple and provably safe: a pass never has to do
+whole-program dataflow analysis to know a temp's value — it's always
+either not-yet-computed or fixed-for-the-rest-of-this-block.
+
+### 33.17 IR Instruction Format
+
+Three-address code: `dest = OP arg1, arg2` (or `OP arg1, arg2` for an
+effect-only instruction with no `dest`, like `STORE`/`PRINT`/`CALL`-with-
+a-discarded-result). Every instruction is an `IRInstruction { op, dest,
+args, node }` (`node` is the originating AST node, kept for diagnostics
+only — never consulted by codegen). Every `IRFunction` is a list of
+`BasicBlock`s; every block is a list of instructions plus exactly one
+**terminator** (`JUMP`/`BRANCH`/`RETURN`) — control never just "falls off
+the end" of a block into the next one in memory; every transfer of
+control is an explicit, labeled jump.
+
+Operand kinds (`ir-nodes.js`):
+
+| Kind | Example | Meaning |
+|---|---|---|
+| `temp` | `t3` | A virtual register — defined once, used only within its own block |
+| `var` | `x$0` | A named (mangled) variable slot — may be written more than once, read from any block |
+| `const` | `10`, `"hi"`, `true` | A compile-time literal |
+
+Worked example — `hold x = 10 + 20` / `hold y = x * 2` (this exact
+program is a permanent regression test, `tests/native/ir.test.js`):
+
+```
+function $main():
+entry_0:
+    t0 = CONST 10
+    t1 = CONST 20
+    t2 = ADD t0, t1
+    STORE x$0, t2
+    t3 = CONST 2
+    t4 = MUL x$0, t3
+    STORE y$1, t4
+    RETURN empty
+```
+
+Note `x$0` is used BARE as an operand to `MUL` (no `LOAD` instruction) —
+a deliberate choice (`ir-generator.js`'s own class doc): a variable read
+never needs its own instruction at this IR level, only a literal does
+(materialized via `CONST` so there's something for Constant Folding/
+Propagation to actually operate on).
+
+### 33.18 AST → IR Conversion
+
+`src/native/ir/ir-generator.js`'s `IRGenerator` walks the AST exactly the
+way `src/bytecode/bytecode-generator.js` already does (one method per
+node type, a `CompileScope` chain for shadowing-safe slot mangling, a
+`loopStack` for `break`/`continue`, predeclare-then-compile for `task`s)
+— re-deriving the same already-proven answers for a three-address-code
+shape instead of a stack-machine one, rather than inventing a second,
+independently-verified approach. Currently supported (§4 of this phase's
+own brief, verified by `tests/native/ir.test.js`'s 23 tests): variable
+declaration/assignment, constants, arithmetic, comparison, boolean
+(`and`/`or`/`not`, lowered to real short-circuit branches — never an
+eager instruction, since eagerly evaluating the right-hand side would be
+an actual behavior change, e.g. a skipped side effect), unary negation,
+variable references, function calls, `return`, `if`/`else`, `while`,
+`repeat`, `break`/`continue`, `say`, `task` definitions (including
+recursion and nested calls). **Not yet lowered**: `choose`, `stop`,
+Arrays (`box`) — each raises a plain `Error` naming the construct (not a
+user-facing `NativeCompileError` — the AST-level gate in
+`native-codegen.js`, §33.3, already rejects these with a proper
+diagnostic before the IR generator would ever see them for a `--native`
+compile; this generator's own error is a defensive backstop for direct
+callers, e.g. future tooling that skips that gate deliberately).
+
+### 33.19 The IR Optimizer (6 Passes)
+
+`src/native/ir/optimizer/` — one file per pass, orchestrated by
+`optimizer/index.js`'s `optimize(program, config, maxSweeps)`. Runs in
+this fixed order, matching the brief's own pipeline diagram, re-running
+the whole enabled sequence until a full sweep changes nothing (capped at
+`maxSweeps`, default 4 — the same convergence-loop shape
+`src/optimizer/optimizer.js`, the Bytecode Optimizer, already uses for
+the same reason: one pass's output can expose new opportunities for an
+earlier pass):
+
+```
+IR → Constant Folding → Constant Propagation → Algebraic Simplification
+   → Dead Code Elimination → Unreachable Code Elimination
+   → Redundant Temporary Elimination → Optimized IR
+```
+
+| Pass | What it does | Safety rule |
+|---|---|---|
+| **A. Constant Folding** | `t2 = ADD t0, t1` → `t2 = CONST 30` when both operands are already known (a literal, or a temp whose defining `CONST` is earlier in the same block) | Division/modulo by a literal zero is NEVER folded — the runtime error must still occur |
+| **B. Constant Propagation** | Replaces every READ of a variable with its value, when that variable is written to a known constant EXACTLY ONCE across its whole (already-unique) lifetime | A multiply-assigned variable (a loop counter, a reassigned `hold`) is never propagated — its value genuinely varies |
+| **C. Algebraic Simplification** | `x + 0`/`x - 0`/`x * 1`/`x / 1` → `x` (a `COPY`); `x * 0` → `0` | Only applied in the exact operand position where the identity is actually valid (`0 - x` is NOT simplified to `x` — that's `-x`, a different value) |
+| **D. Dead Code Elimination** | Removes a pure, value-producing instruction whose result is never read, or a `STORE` to a variable never read anywhere | **Never** removes `CALL`/`PRINT`, or a `STORE` to a variable that IS read somewhere — a function may have side effects the IR can't prove absent |
+| **E. Unreachable Code Elimination** | Removes whole basic BLOCKS unreachable from the function's entry (a graph reachability walk, not a text pattern) | Only ever removes a block with zero incoming control-flow edges — e.g. code textually following `return`/`break`/`continue` |
+| **F. Redundant Temporary Elimination** | Copy propagation for `COPY` instructions (Algebraic Simplification's own output): `t1 = x; y = t1` → `y = x` | Only ever substitutes within the SAME basic block (temps never cross blocks — §33.16) |
+
+**Configurable**, exactly as the brief requests:
+
+```js
+import { optimize } from './src/native/ir/optimizer/index.js';
+const { program, statistics } = optimize(ir, {
+  constantFolding: true,
+  constantPropagation: true,
+  algebraicSimplification: true,
+  deadCodeElimination: false, // any key omitted defaults to enabled
+});
+```
+
+**A real bug this design caught**: a first version of Dead Code
+Elimination tracked "which temps are used" in ONE set for the whole
+program — but a virtual register's id is only unique WITHIN the function
+that defines it (each function's own temp counter restarts at 0), so a
+`t0` used in `$main` incorrectly protected an unrelated, genuinely-dead
+`t0` in a different function from removal. Caught by tracing an actual
+optimizer run where a known-dead instruction wasn't being removed, not
+by code review — fixed by scoping the "used temps" tracking per function
+(`dead-code-elimination.js`'s own class doc tells the full story); a
+regression test for exactly this shape (`say f(5)` calling a function
+with its own locally-dead temp) is in `tests/native/ir-optimizer.test.js`.
+
+### 33.20 IR → Target Code
+
+`src/native/codegen/ir-to-x86-64.js` is the actual code generator now —
+it consumes the OPTIMIZED IR, not the AST (the brief's own §7
+requirement). For the currently-emittable subset, this means walking
+`$main`'s one basic block, resolving each `PRINT` instruction's operands
+back to their literal string values (the same "is this temp's value
+known" resolution every optimizer pass already uses), and emitting the
+identical `GetStdHandle`/`WriteFile`/`ExitProcess` sequence §33.5
+documents. `native-codegen.js` still runs its own, unchanged AST-level
+"is this within the native-compilable subset" gate FIRST (§33.3's "two-
+stage validation, deliberately" note) — so every optimized IR
+`ir-to-x86-64.js` ever receives is guaranteed to already be in the simple
+shape it knows how to emit; growing the emittable subset (§33.14) means
+growing THIS file to walk more of the IR shapes the generator/optimizer
+already fully support today.
+
+### 33.21 How to Debug IR
+
+```
+pari --native <file.pr> --emit-ir             # the IR exactly as generated, before optimization
+pari --native <file.pr> --emit-optimized-ir   # the same IR after the pipeline runs
+pari --native <file.pr> --optimizer-stats     # how many changes each pass made
+pari --native <file.pr> --ir                  # the older, short "what did the compiler understand" summary (predates this IR pipeline)
+pari --native <file.pr> --asm                 # the actual generated x86-64, one line per instruction
+```
+
+All four IR/optimizer flags compose with each other and with `-o`; none
+of them change whether the `.exe` gets written (they're additive
+inspection, printed before it, per the brief's own §14: "do not expose
+unstable internal details as the default user experience").
+
+### 33.22 How to Add a New Optimization Pass
+
+1. Create `src/native/ir/optimizer/your-pass.js`, exporting a function
+   `(program) => ({ yourPassKey: countOfChangesMade })` — study
+   `algebraic-simplification.js` for the simplest complete example (one
+   pattern-match function + a loop over every instruction).
+2. Add it to `PASSES` (name, `run` function) and `DEFAULT_OPTIMIZER_CONFIG`
+   (default `true`) in `optimizer/index.js`; add a label to `STAT_LABELS`
+   for `formatOptimizerStatistics()`.
+3. **State your safety rule in a comment before writing any logic** — every
+   existing pass's class doc leads with exactly what it will never do and
+   why (§33.19's table's own right-hand column). If your pass could ever
+   remove or reorder something with an observable effect (I/O, a variable
+   another block reads), it isn't safe as an unconditional pass — needs a
+   real dataflow analysis, not a heuristic.
+4. Add tests to `tests/native/ir-optimizer.test.js`: one showing your
+   pass's own transformation in isolation (disable every other pass via
+   the config option, matching this file's own `optimizeOnly()` helper),
+   and one showing it correctly declining to act on an unsafe case.
+5. Run the full suite (`node --test`) — zero regressions, per this
+   phase's own non-negotiable rule.
+
+## 34. Adaptive Execution Engine (Phase 14)
+
+By Phase 13, Parithi had **three independent, complete backends** that all
+coexisted but were only ever reached by an explicit flag — the Tree-Walking
+Interpreter (default, §17), the Bytecode Generator + PVM (§29/§30,
+`--run-bytecode`), and the Native x86-64 compiler (§33, `--native`). A bare
+`pari <file.pr>` always meant "run it on the Interpreter," regardless of
+whether a faster backend could have run the exact same program. Phase 14
+adds one new component — a **Backend Selector** — that picks the best
+available backend for a program automatically, and a `--backend` flag to
+force one explicitly, **without changing what any of the three backends
+themselves do**.
+
+### 34.1 Architecture
+
+```
+Source (.pr)
+     |
+     v
+Lexer -> Parser -> Semantic Analyzer   (unchanged — shared by all four commands below)
+     |
+     v
+Backend Capability Resolver  (src/backend/capability.js + selector.js)
+     |
+     |  static AST inspection only — no execution, no full compilation
+     v
+  +-------------------+     +-------------------+     +----------------------+
+  |  Native x86-64    | --> |  Bytecode + PVM   | --> | Tree-Walking         |
+  |  (§33)            |     |  (§29/§30)        |     | Interpreter (§17)    |
+  +-------------------+     +-------------------+     +----------------------+
+     first supported wins (priority order, left to right)
+                          |
+                          v
+                  Program Output (stdout/stderr/exit code)
+```
+
+Only the **winning** backend ever touches the program. The other two are
+never invoked, not even partially — see §34.3 for why this matters.
+
+### 34.2 Backend Priority
+
+Automatic selection (`pari <file.pr>`, no `--backend` flag) always tries,
+in this fixed order, and runs the program on the first backend that
+supports it:
+
+1. **Native x86-64** — fastest, but currently only supports the small
+   subset §33.9 documents (a sequence of top-level `say` statements with
+   String literal arguments).
+2. **Bytecode + PVM** — the Bytecode Generator (§29) has a compiler for
+   every AST node type the Parser can produce (`bytecode-generator.js`'s
+   `compileStatement()`/`compileExpression()` switches cover the complete
+   `NodeType` enum), so in practice this step supports every program that
+   passes Semantic Analysis.
+3. **Tree-Walking Interpreter** — the reference implementation, always
+   supported, the final fallback.
+
+**Honest limitation**: because step 2 above is unconditionally true today,
+automatic selection can only ever pick Native or Bytecode in practice — the
+Interpreter branch of the *priority list* is real and tested (§34.6), but
+no real Parithi program can reach it through *automatic* selection right
+now, since nothing is currently both native-unsupported AND
+bytecode-unsupported. It remains reachable directly via `--backend
+interpreter`, and the priority order is still the correct, forward-looking
+design: the day Bytecode gains any deliberately-scoped limitation (the same
+way Native has one today), the Interpreter fallback engages with no
+further changes needed.
+
+### 34.3 Why Capability Analysis, Not Trial Execution
+
+An earlier, tempting design would "just try Native, catch a failure, fall
+back to Bytecode." This is explicitly wrong for a language with
+side-effecting statements (`say`, and eventually file/network I/O): if
+Native ran three `say` statements and then hit an unsupported fourth
+statement, the program would have already printed output twice — once
+(partially) from the abandoned Native attempt, once (fully) from the
+Bytecode retry. Phase 14 forbids this categorically. Instead:
+
+- `src/backend/capability.js` exports one **pure, static, side-effect-free
+  check per backend** — `checkNativeCapability`, `checkBytecodeCapability`,
+  `checkInterpreterCapability` — each answering "can you run this program?"
+  by inspecting the already-validated (post-Semantic-Analysis) AST alone.
+  None of them execute a single statement of the program.
+- `checkNativeCapability` reuses the **exact same AST-level gate**
+  `native-codegen.js`'s `extractSayText()` already runs (§33.3's "two-stage
+  validation" — same feature/reason wording, same `NativeCompileError`
+  shape) but stops there: no IR generation, no x86-64 emission, no PE
+  assembly. This is what keeps the check cheap (§34.8) — it is the same
+  gate that already ran before Native ever did real code generation, not a
+  new, separate walk.
+- `src/backend/selector.js`'s `selectBackend()` runs every check, in
+  priority order, and returns the first `supported: true` result — a pure
+  decision, made once, before any backend is invoked.
+
+### 34.4 CLI
+
+```
+pari <file.pr>                     Automatic selection (Native -> Bytecode -> Interpreter)
+pari <file.pr> --backend native        Force Native x86-64 — no fallback
+pari <file.pr> --backend bytecode      Force Bytecode + PVM — no fallback
+pari <file.pr> --backend interpreter   Force the Tree-Walking Interpreter — no fallback
+pari --explain-backend <file.pr>       Analysis only — never executes the program
+pari <file.pr> --verbose               Automatic/forced selection also prints "Backend: <name>"
+                                        before the program's own output
+```
+
+`--backend` never silently falls back: if the named backend's capability
+check reports unsupported, `pari` prints a clean diagnostic (the real
+`NativeCompileError`/P030 when forcing Native, for example) and exits with
+`ExitCode.COMPILER_ERROR` — it does **not** try a different backend.
+
+### 34.5 `--explain-backend` — Example
+
+```
+$ pari --explain-backend hello.pr
+
+Backend Selection for hello.pr
+------------------------------------------------------------------------
+
+Native x86-64             SUPPORTED
+  Selected backend.
+
+Bytecode + PVM            SUPPORTED
+
+Tree-Walking Interpreter  SUPPORTED
+
+Selected: Native x86-64
+  Because it is first in priority (Native x86-64 -> Bytecode + PVM ->
+  Tree-Walking Interpreter) and supports this program.
+
+$ pari --explain-backend variables.pr
+
+Native x86-64             UNSUPPORTED
+  Reason: Feature "VariableDeclaration" is not supported — the native
+  backend currently only compiles "say" statements with String literal
+  arguments.
+
+Bytecode + PVM            SUPPORTED
+  Selected backend.
+
+Tree-Walking Interpreter  SUPPORTED
+
+Selected: Bytecode + PVM
+```
+
+This mode never generates bytecode, never emits x86-64, and never runs the
+Interpreter — it only calls the three capability checks and prints their
+verdicts.
+
+### 34.6 How Execution Actually Happens Per Backend
+
+Once a backend is selected, `src/cli/commands.js`'s `runWithBackend()`
+dispatches to one of three small execute-helpers, all operating on the
+**same already-parsed-and-analyzed AST** (the frontend runs exactly once,
+regardless of which backend wins):
+
+- **Interpreter** — `executeInterpreterProgram()`: unchanged from before
+  Phase 14, `new Interpreter(filePath).run(program)`.
+- **Bytecode + PVM** — `executeBytecodeProgram()`: `generateBytecode()` +
+  `validateBytecode()` (in memory, no `.pbc` file written) then the same
+  `executeBytecode()` helper `--run-bytecode` already used.
+- **Native x86-64** — `executeNative()`: this is the one genuinely new
+  execution path. It runs the real pipeline (`compileProgramToNative()` +
+  `buildPE64Executable()` — the same functions `--native` uses), writes the
+  resulting `.exe` to a throwaway temp directory (`os.tmpdir()`, never the
+  user's project folder), **spawns it as a real child process**
+  (`spawnSync`, `stdio: 'inherit'` so its stdout/stderr become this
+  process's own), forwards its exit code, and deletes the temp directory
+  afterward. This is what makes "Native x86-64" a genuine fourth way to run
+  a program end-to-end, not a label that quietly falls back to something
+  else.
+
+`stop <n>` (§15.7) exit-code semantics, and every backend's own exit-code
+scheme (`ExitCode.COMPILER_ERROR`/`RUNTIME_ERROR`), are preserved exactly
+per-backend — Phase 14 changes *which* backend runs a program, never what
+running a program on a given backend *means*.
+
+### 34.7 Testing
+
+- `tests/backend/capability.test.js` (20 tests) — unit tests for all three
+  capability checks against real parsed/analyzed programs, the `BACKENDS`
+  priority list shape, `selectBackend()`/`evaluateBackend()` against real
+  programs, and `selectFromEvaluations()` (the pure priority-order
+  algorithm) against **synthetic** evaluation lists covering all three
+  outcomes — including the interpreter-selected branch no real program can
+  reach today (§34.2's honest limitation), tested at the algorithm level
+  instead of being falsely claimed against a real program.
+- `tests/backend/cli.test.js` (31 tests) — real subprocess tests: automatic
+  selection (native-selected and bytecode-selected cases), backend parity
+  (Native/Bytecode/Interpreter agree on the same program's stdout and exit
+  code), forced `--backend` success and no-fallback-on-failure, the
+  `--verbose` banner's position and content, `--explain-backend`'s report
+  and its never-executes guarantee, and every existing example program
+  still producing identical output under automatic selection as under
+  `--backend interpreter`.
+- The full existing suite (855 tests as of Phase 13) was re-run after every
+  change in this phase with zero regressions — see `CHANGELOG.md` for the
+  final count.
+
+### 34.8 Performance
+
+Capability analysis is a single, bounded walk over `program.body` (Native's
+check) or a constant-time answer (Bytecode's and Interpreter's checks
+today) — it never generates IR, never emits machine code, and never builds
+a PE executable just to find out a backend can't run a program. Only the
+backend that actually wins proceeds to real compilation/execution. No new
+performance claims are made beyond what §33.8/§33.13 already documented for
+the Native backend itself — Phase 14 only changes when that backend gets
+used, not how fast it is.
+
+### 34.9 What Was Deliberately Not Done
+
+Per this phase's own scope: no new language keywords, modules, OOP,
+exception handling, async/await, garbage-collector redesign, new type
+system, or new syntax. The Interpreter, Bytecode Generator, PVM, Optimizer,
+and Native compiler are exactly as capable as they were at the end of
+Phase 13 — Phase 14 adds a selection layer in front of them, not new
+capability inside any of them.
+
+## 35. Production Readiness Audit (Phase 15)
+
+An end-to-end audit of the complete Phase 0–14 implementation — every
+keyword, every backend, the Standard Library, the Native compiler, the
+CLI, and npm packaging — each verified by actually running it (real
+`.pr` programs through the real CLI, real generated `.exe` files
+actually executed, a real `npm pack` extracted and installed into a
+clean directory with zero access to this repository), not by reading
+source and assuming it works. `npm test` was 906/906 passing immediately
+before this phase; **929/929 passing after** (906 + 23 new regression
+tests for the fixes below), zero regressions in any pre-existing test.
+
+### 35.1 Method
+
+Six areas were each audited independently: Lexer/Parser, Semantic
+Analyzer/Interpreter, Bytecode/PVM/Optimizer, Native compiler, Standard
+Library, and CLI/packaging/documentation. Several apparent "bugs" found
+during testing turned out, on verification against source and existing
+tests, to be correct, documented, deliberate behavior — for example
+`isEmpty("")` correctly returning `false` (§32.3: `isEmpty()` checks for
+the `empty` type or a zero-length Array, never string length) and
+`remove(array, index)` correctly returning the removed *element*, not the
+mutated array (matching `pop()`'s own convention). These are recorded
+here as confirmations, not defects — "the code exists and the tests pass"
+was never treated as sufficient on its own; every claim below was
+independently re-verified before being called a bug or cleared as
+not one.
+
+### 35.2 Bugs Found and Fixed
+
+| # | Severity | Bug | Fix |
+|---|---|---|---|
+| 1 | High | Deeply nested source (1000+ parenthesized groups, or thousands of nested `if`/`box(...)`) crashed with a raw, unformatted JS `RangeError` — violating this project's own "every failure is a P0xx diagnostic, never a stack trace" invariant (§18) | New `P031` "Maximum nesting depth exceeded," raised by a depth guard at the two recursive choke points (`parseExpression()`/`parseBlock()`) every deeply-nested construct funnels through — see [§35.3](#353-parser-recursion-guard-p031) |
+| 2 | Medium | `>`/`<`/`>=`/`<=` were only checked for mutual type-*compatibility*, not for being an actually orderable type — `box(1,2) > box(3,4)` and `true > false` both passed Semantic Analysis silently and fell through to a meaningless raw JS `<`/`>` at runtime (Array-to-string coercion; Boolean-to-number coercion) | New `isOrderable()` (`types.js`): only Number, Decimal, and String may be ordered; Array and Boolean now raise `P002` with a specific "ordering only applies to..." message. `==`/`!=` (deep equality) are completely unaffected |
+| 3 | Medium | `option -1` in a `choose` block always failed `P013` — the lexer always emits `-` as its own `OPERATOR` token (by design, §9.1), so there was no way to write a negative `option` value at all | `parseOptionClause()` now recognizes `-` immediately followed by a `NUMBER`/`DECIMAL` token and folds it into a single negated `Literal` node (not a `UnaryExpression` — `option.test` is read directly as a Literal by `analyzer.js`/`bytecode-generator.js`, so this keeps that exact shape) |
+| 4 | Low | A name colliding with a reserved/built-in name (`P004`) left nothing declared in scope, so every later reference to that same name independently raised its own `P001` — one mistake, a cascade of unrelated-looking diagnostics | `checkNameAvailable()` now declares an `Unknown`-typed placeholder symbol after reporting `P004`, matching how `P014` (genuine duplicate) already avoids cascading, since the first (valid) declaration is already in scope there |
+| 5 | Low | A bare `\r` line ending (no following `\n` — classic pre-OS X Mac text files) fell through the same silent-skip path as plain whitespace, so it never produced a `NEWLINE` token — an entire file collapsed onto one logical line | The lexer's `\r` case now checks for a following `\n` (CRLF — absorbed exactly as before) and otherwise emits its own `NEWLINE`, matching every other line-ending convention |
+| 6 | Low (documentation) | `pari --version`'s "Backends" line still only listed the Interpreter and Bytecode Generator, never mentioning the Native x86-64 backend (Phase 13) or the Adaptive Execution Engine (Phase 14) — under-reporting the CLI's own live architecture | Added `nativeSupport()`/`adaptiveEngineSupport()` (same live-detection pattern as the existing `bytecodeSupport()`/`pvmSupport()`), a new "Execution" line, and "Native x86-64" appended to "Backends" |
+| — | Low (cleanup) | `src/interpreter/builtins/array.js` still defined its own `contains()`, dead code shadowed since Phase 13a by the polymorphic (Array-or-String) version in `stdlib/array/index.js`, which is the one actually registered | Removed the dead function and its now-unused `deepEquals` import |
+
+Panic-mode error recovery interacted badly with the new nesting-depth
+guard: the first version simply reported `P031` and resumed parsing like
+any other syntax error, which re-hit the identical depth wall a few
+tokens later, over and over — one 5,000-deep test file produced **9,672**
+near-duplicate diagnostics before this was caught and fixed. A
+nesting-depth error now bypasses panic-mode recovery entirely and fails
+fast with the single, real diagnostic — found by actually running the
+fix against the exact input that motivated it, not assumed correct
+because the guard "should" work.
+
+### 35.3 Parser Recursion Guard (P031)
+
+```
+pari deeply-nested.pr
+
+Error P031:
+Maximum expression nesting depth (200) exceeded.
+  → deeply-nested.pr:1:205
+Hint: this program is nested far more deeply than any realistic Parithi
+program needs to be — break it into smaller expressions, blocks, or
+functions.
+```
+
+`MAX_NESTING_DEPTH` is `200` — comfortably below the observed real crash
+threshold (500–1,000 on the reference machine, and stack-size-dependent
+across machines) so the guard always fires first, and far above anything
+a realistically-written Parithi program would ever need. Capping depth at
+the parser is a single point of defense: since no AST deeper than the
+limit can ever be produced, the Semantic Analyzer, Interpreter, Bytecode
+Generator, and Native codegen are all protected transitively — none of
+them need their own separate guard.
+
+### 35.4 What Was Confirmed Correct (Not Bugs)
+
+- `isEmpty("")` → `false` (§32.3 — `isEmpty()` is intentionally about the
+  `empty` type or empty Arrays, never string length; matches
+  `tests/array.test.js`'s own pre-existing assertion).
+- `remove(array, index)` returns the removed *element*, matching
+  `pop()`'s documented convention — not the mutated array.
+- `contains()` is intentionally polymorphic (Array or String) since
+  Phase 13a — confirmed against `stdlib/array/index.js`.
+- No string escape sequences (`\n`, `\t`, `\"`, `\\`) — an explicit,
+  documented lexer design decision (`lexer.js`'s own class doc), not an
+  oversight.
+- 99 Standard Library test programs across all 51 built-ins: zero
+  Interpreter-vs-Bytecode parity mismatches, zero raw crashes.
+- 15 language-feature programs, each run on the Interpreter, forced
+  Bytecode, and *optimized* Bytecode execution: zero parity mismatches
+  across all three.
+- 13 real `.exe` files compiled and actually executed (not just
+  inspected) for the native-supported subset: byte-for-byte identical to
+  Interpreter output in every case, including a raw-buffer comparison for
+  Unicode/emoji content.
+- A real `npm pack` → extracted into a clean temp directory (zero access
+  to this repository) → `npm install` (instant, zero dependencies) →
+  `pari --version`, a self-authored `.pr` program, `--explain-backend`,
+  and `--native` (compiled **and executed** a real `.exe`) — all worked
+  correctly, confirming `package.json`'s `"files"` list genuinely ships
+  everything the CLI needs, including the `native/` and `backend/`
+  directories added in Phases 13–14.
+
+### 35.5 What Was Deliberately Not Done
+
+No new language keywords, syntax, or backend capability — every fix
+above is a correctness/robustness fix to existing, documented behavior,
+never a feature addition. `CR`-only line endings and the ordering
+restriction were the only two behavior changes visible to a Parithi
+*program* (as opposed to the CLI's own diagnostics); both make
+previously-undefined or silently-wrong behavior into either working
+correctly (CR) or a clear compile-time error instead of a meaningless
+runtime result (ordering) — neither changes any previously-*working*
+program's behavior.
+
+## 36. Unified Loop Model (Phase 16)
+
+Parithi's pre-existing loop keywords — `while`/`repeat`, both statements
+only, with a bare `break`/`continue` — are unchanged and remain the
+recommended, idiomatic way to write a conditional or counted loop. Phase
+16 adds one new, unconditional construct, `loop`, and extends `break` to
+optionally carry a value everywhere `break` already works, so that all
+three loop forms share one underlying semantic: *a loop may produce a
+value — whatever its `break <expression>` supplies, or `Empty` if none
+does.*
+
+### 36.1 `loop ... end loop`
+
+```
+hold i = 1
+
+loop
+    say i
+
+    if i == 5
+        break
+    end if
+
+    i = i + 1
+end loop
+```
+```
+1
+2
+3
+4
+5
+```
+
+Unlike `while`/`repeat`, `loop` carries no condition or count of its own
+— it runs forever until a `break` (or `return`/`stop`) inside it fires.
+`continue` works exactly as it already does for `while`/`repeat`: it
+skips to the next iteration of the *nearest* enclosing loop.
+
+### 36.2 `break <expression>` — a loop as an expression
+
+```
+hold items = box(3, 7, 10, 15)
+hold i = 0
+
+hold result = loop
+    hold item = items[i]
+
+    if item == 10
+        break item
+    end if
+
+    i = i + 1
+end loop
+
+say result
+```
+```
+10
+```
+
+`break <expression>`'s value is evaluated exactly once, at the moment
+`break` runs. A bare `break` (no value) is equivalent to `break empty` —
+no new value type was introduced; Parithi already has `Empty`
+(§12.2), and it is what a loop evaluates to whenever nothing supplied a
+real value, exactly as an un-assigned `hold x = empty` already means "no
+value yet." A `break <expression>` **outside any loop** is a semantic
+error (`P018`) — the value does not exempt it.
+
+`while` and `repeat` participate in this exact same model: both may also
+be used in expression position, and both evaluate to `Empty` on a
+*natural* exit (condition false / count exhausted) unless a
+`break <expression>` inside them overrides it —
+
+```
+hold x = 0
+hold r = while x < 10
+    x = x + 1
+    if x == 5
+        break x
+    end if
+end while
+say r
+```
+```
+5
+```
+
+Used as a bare statement (the overwhelmingly common case, and the only
+form that existed before this phase), `while`/`repeat`/`loop` behave
+*exactly* as they always have — nothing about their existing statement
+usage changed.
+
+### 36.3 Nesting
+
+Each loop tracks its own break value independently. An inner loop's
+`break <expression>` can never become an outer loop's result:
+
+```
+hold result = loop
+    loop
+        break 10
+    end loop
+
+    break 20
+end loop
+
+say result
+```
+```
+20
+```
+
+This falls out of the exact same "innermost loop" tracking `break`/
+`continue` already used before this phase (`loopStack` in the bytecode
+generator, `this.context.loopDepth` plus a per-loop catch in the
+Interpreter, a per-loop `breakValueStack` frame in the Semantic
+Analyzer) — nesting correctness required no new mechanism, only
+extending the existing one to also carry a value.
+
+### 36.4 Distinguishing `break`, `continue`, and `return`
+
+Three genuinely different control-flow operations, unaffected by each
+other:
+
+```
+task find()
+    loop
+        if true
+            break 42     # exits only the loop — "find" itself keeps running
+        end if
+    end loop
+
+    return 1             # this is what find() actually returns
+end task
+
+say find()
+```
+```
+1
+```
+
+`return` (even from deep inside a loop) exits the enclosing *function*;
+`break` exits only its own nearest loop. Recursion composes with loops
+normally — a recursive function's own loop is scoped to that call's own
+loop-tracking state, exactly like an already-existing `while`/`repeat`
+inside a recursive function.
+
+### 36.5 Static Typing of a Loop's Result
+
+A `hold`/`const` initialized from a loop locks its type from that loop's
+`break <expression>` value(s), the same "locked from first assignment"
+model every other variable already uses. Every `break <expression>`
+*within the same loop* must agree on a compatible type — mixing
+`break 5` and `break "text"` in the same loop is a `P002` type error,
+exactly like reassigning a locked variable to an incompatible type; a
+bare `break` (Empty) never conflicts with a concrete type, since `Empty`
+is always compatible with anything (§13.1).
+
+### 36.6 Backend Support
+
+| Backend | Support |
+|---|---|
+| Tree-Walking Interpreter | Full — the reference implementation; `BreakSignal` (already existed for bare `break`) now carries an optional value, mirroring `ReturnSignal`'s pre-existing shape exactly. |
+| Bytecode + PVM | Full — no new opcodes. Every loop exit path (natural or `break`) converges on exactly one pushed value at a shared label, reusing the same `PUSH`/`JMP`/`JMP_IF_FALSE` convergent-jump shape `and`/`or` short-circuiting already established. |
+| Native x86-64 | Not supported, unchanged — the native backend's existing capability gate already rejects any loop construct (old or new) before it ever reaches code generation (§33.9); the Native IR generator explicitly rejects the *new* capability (`loop`, `break <expression>`, `while`/`repeat` in expression position) with a clean "not yet lowered to IR" error, leaving its pre-existing, tested bare-`break`/`while`/`repeat` IR modeling completely untouched. |
+
+### 36.7 What Changed vs. What Stayed the Same
+
+**New**: the `loop` keyword; `break <expression>`; `while`/`repeat`/`loop`
+usable in expression position. No new error code was introduced — every
+invalid-usage case reuses an existing one (`P018`/`P019`/`P002`).
+
+**Unchanged**: every pre-existing `while`/`repeat`/`break`/`continue`
+program behaves identically to before — this phase is purely additive.
+No keyword was removed, no existing syntax was repurposed, and no
+backend's *capability* boundary moved (native still compiles only `say`
+with String literals; the Interpreter and Bytecode/PVM still support the
+whole language).

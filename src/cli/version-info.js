@@ -29,6 +29,8 @@ import { dirname, join } from 'node:path';
 import * as bytecodeModule from '../bytecode/index.js';
 import * as vmModule from '../vm/index.js';
 import * as optimizerModule from '../optimizer/index.js';
+import * as nativeModule from '../native/native-compiler.js';
+import * as backendModule from '../backend/selector.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const packageJson = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf-8'));
@@ -68,4 +70,14 @@ export function optimizerSupport() {
 /** Number of ordered optimizer passes (§31.3) — read from the Optimizer's own pass list, never hand-maintained. */
 export function passCount() {
   return optimizerSupport() ? optimizerModule.DEFAULT_PASSES.length : 0;
+}
+
+/** True if the Native x86-64 compiler (Phase 13, §33) is actually present and callable. */
+export function nativeSupport() {
+  return typeof nativeModule.compileNative === 'function';
+}
+
+/** True if the Adaptive Execution Engine's BackendSelector (Phase 14, §34) is actually present and callable. */
+export function adaptiveEngineSupport() {
+  return typeof backendModule.selectBackend === 'function' && typeof backendModule.evaluateBackend === 'function';
 }

@@ -60,8 +60,14 @@ export const ASTBuilder = {
     return { type: NodeType.WHILE_STATEMENT, condition, body, line, column };
   },
 
-  breakStatement(line, column) {
-    return { type: NodeType.BREAK_STATEMENT, line, column };
+  /** `loop ... end loop` (§36) — unconditional, exited only via `break`/`return`/`stop`; usable as a statement or, via `break <expression>`, as an expression. */
+  loopExpression(body, line, column) {
+    return { type: NodeType.LOOP_EXPRESSION, body, line, column };
+  },
+
+  /** `value` is null for a bare "break" — mirrors `returnStatement`'s own optional-value shape exactly (§36). */
+  breakStatement(value, line, column) {
+    return { type: NodeType.BREAK_STATEMENT, value, line, column };
   },
 
   continueStatement(line, column) {

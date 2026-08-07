@@ -13,8 +13,10 @@
  * all CLI usage errors, reported the same way a bad flag is.
  */
 
-import { readFileSync, writeFileSync, existsSync, statSync } from 'node:fs';
-import { extname, resolve, relative, basename } from 'node:path';
+import { readFileSync, writeFileSync, existsSync, statSync, mkdtempSync, rmSync } from 'node:fs';
+import { extname, resolve, relative, basename, join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { parseArgs } from './args.js';
 import { logger } from '../utils/logger.js';
 import { colors } from '../utils/colors.js';
@@ -28,6 +30,11 @@ import { generateBytecode, validateBytecode, formatBytecodeText, writeBytecodeBi
 import { VirtualMachine, compileFromSource } from '../vm/index.js';
 import { optimizeBytecode, formatOptimizerReport } from '../optimizer/index.js';
 import { compileNative, formatAsmListing } from '../native/native-compiler.js';
+import { compileProgramToNative } from '../native/codegen/native-codegen.js';
+import { buildPE64Executable } from '../native/pe/pe-writer.js';
+import { formatIR } from '../native/ir/ir-printer.js';
+import { formatOptimizerStatistics } from '../native/ir/optimizer/index.js';
+import { selectBackend, evaluateBackend } from '../backend/selector.js';
 import { setProgramArguments } from '../stdlib/system/program-args.js';
 import { printError } from '../utils/messages.js';
 import { ExitCode } from './exit-codes.js';
@@ -44,7 +51,7 @@ export function runCli(argv) {
     return;
   }
 
-  const { mode, file, verbose, optimize, asm, ir, outputPath, programArgs } = options;
+  const { mode, file, verbose, optimize, asm, ir, emitIr, emitOptimizedIr, optimizerStats, outputPath, backend, programArgs } = options;
   // Phase 13 (§32.9): available to the running program via arguments() —
   // set once per process, before any mode below can execute Parithi code.
   setProgramArguments(programArgs ?? []);
@@ -92,7 +99,14 @@ export function runCli(argv) {
       // the Interpreter and Bytecode/PVM, not a replacement for either
       // (§1/§23 of the native-compiler brief). Only a small subset of the
       // language compiles today — see native-codegen.js's own class doc.
-      withSourceFile(file, (source, filePath) => compileNativeToFile(source, filePath, { asm, ir, outputPath }));
+      withSourceFile(file, (source, filePath) => compileNativeToFile(source, filePath, { asm, ir, emitIr, emitOptimizedIr, optimizerStats, outputPath }));
+      return;
+    case 'explain-backend':
+      // Phase 14 (Adaptive Execution Engine) — analysis only, exactly like
+      // --ast/--bytecode/etc.: never executes the program, just reports
+      // each backend's capability verdict and which one automatic
+      // selection would pick and why.
+      withSourceFile(file, printExplainBackend);
       return;
     case 'run-bytecode':
       // Phase 11: accepts either a compiled .pbc file (loaded directly) or
@@ -129,7 +143,13 @@ export function runCli(argv) {
         withSourceFile(file, printOptimizedBytecode);
         return;
       }
-      withSourceFile(file, (source, filePath) => runProgram(source, filePath, { verbose }));
+      // Phase 14 (Adaptive Execution Engine): with no explicit --backend,
+      // BackendSelector statically evaluates Native -> Bytecode ->
+      // Interpreter capability (never by partially executing one backend
+      // and retrying on another) and runs the first that supports this
+      // program. `--backend <name>` forces one specific backend instead
+      // and never silently falls back to a different one.
+      withSourceFile(file, (source, filePath) => runWithBackend(source, filePath, { verbose, backend }));
       return;
     default:
       // Unreachable: parseArgs only ever returns one of the modes above —
@@ -215,9 +235,17 @@ function printDiagnosticList(diagnostics) {
   });
 }
 
-function runProgram(source, filePath, { verbose = false } = {}) {
-  const startedAt = verbose ? performance.now() : 0;
-
+/**
+ * Phase 14 (Adaptive Execution Engine) — the bare `pari <file.pr>` entry
+ * point (automatic selection) and `pari <file.pr> --backend <name>` (forced
+ * selection) share this one function: both lex/parse/analyze exactly
+ * once, decide on exactly one backend BEFORE anything executes, then hand
+ * off to that backend's own execute-helper below. No backend is ever
+ * partially run and then abandoned for another — the capability checks in
+ * src/backend/capability.js are pure static AST inspection, never a trial
+ * execution.
+ */
+function runWithBackend(source, filePath, { verbose = false, backend = null } = {}) {
   const parsed = lexAndParse(source, filePath);
   if (!parsed) return;
 
@@ -230,9 +258,55 @@ function runProgram(source, filePath, { verbose = false } = {}) {
     return;
   }
 
+  const program = parsed.program;
+  let selectedId;
+  let selectedLabel;
+
+  if (backend) {
+    const evaluation = evaluateBackend(backend, program, filePath);
+    if (!evaluation.supported) {
+      // Forced backends never silently fall back to a different one —
+      // a clean diagnostic instead, reusing the exact same error the
+      // automatic path's capability check would have reported.
+      logger.error(`The "${evaluation.label}" backend cannot run "${basename(filePath)}".`);
+      console.log('');
+      printError(evaluation.error);
+      process.exitCode = ExitCode.COMPILER_ERROR;
+      return;
+    }
+    selectedId = evaluation.id;
+    selectedLabel = evaluation.label;
+  } else {
+    const selection = selectBackend(program, filePath);
+    selectedId = selection.selected;
+    selectedLabel = selection.selectedLabel;
+  }
+
+  if (verbose) {
+    console.log(colors.dim(`Backend: ${selectedLabel}`));
+    console.log('');
+  }
+
+  switch (selectedId) {
+    case 'native':
+      executeNative(program, filePath, { verbose });
+      return;
+    case 'bytecode':
+      executeBytecodeProgram(program, filePath, { verbose });
+      return;
+    case 'interpreter':
+      executeInterpreterProgram(program, filePath, { verbose });
+      return;
+  }
+}
+
+/** Runs an already-validated `program` on the Tree-Walking Interpreter — the exact behavior `pari <file.pr>` always had before Phase 14. */
+function executeInterpreterProgram(program, filePath, { verbose = false } = {}) {
+  const startedAt = verbose ? performance.now() : 0;
+
   const interpreter = new Interpreter(filePath);
   try {
-    interpreter.run(parsed.program);
+    interpreter.run(program);
   } catch (err) {
     if (!isReportable(err)) throw err;
     printError(err);
@@ -252,6 +326,104 @@ function runProgram(source, filePath, { verbose = false } = {}) {
     const elapsedMs = performance.now() - startedAt;
     console.log(colors.dim(`\n✓ Completed in ${elapsedMs.toFixed(2)}ms.`));
   }
+}
+
+/** Runs an already-validated `program` on the Bytecode Generator + PVM — generates bytecode in memory (no .pbc file written), exactly like `--run-bytecode <file.pr>` already does. */
+function executeBytecodeProgram(program, filePath, { verbose = false } = {}) {
+  const bytecode = generateBytecode(program);
+  const { valid, errors } = validateBytecode(bytecode);
+  if (!valid) {
+    reportBytecodeBug(filePath, errors);
+    return;
+  }
+
+  executeBytecode(bytecode, filePath, { verbose });
+}
+
+/**
+ * Runs an already-validated `program` via the native x86-64 backend: real
+ * code generation (native-codegen.js -> pe-writer.js — the exact same
+ * pipeline `compileNative()` uses), written to a throwaway temp `.exe`,
+ * executed as a real child process, then cleaned up. This is what makes
+ * "Native x86-64" a genuine, fourth way to run a program end-to-end rather
+ * than a display-only label — its stdout/stderr/exit code become this
+ * `pari` process's own, exactly like the interpreter/bytecode paths.
+ */
+function executeNative(program, filePath, { verbose = false } = {}) {
+  const startedAt = verbose ? performance.now() : 0;
+
+  let compiled;
+  try {
+    compiled = compileProgramToNative(program, filePath);
+  } catch (err) {
+    if (!isReportable(err)) throw err;
+    printError(err);
+    process.exitCode = ExitCode.COMPILER_ERROR;
+    return;
+  }
+  const exe = buildPE64Executable({
+    textBytes: compiled.textBytes,
+    textFixups: compiled.textFixups,
+    imports: compiled.imports,
+    stringConstants: compiled.stringConstants,
+  });
+
+  const tempDir = mkdtempSync(join(tmpdir(), 'parithi-native-'));
+  try {
+    const tempExePath = join(tempDir, `${basename(filePath, extname(filePath))}.exe`);
+    writeFileSync(tempExePath, exe);
+    const result = spawnSync(tempExePath, [], { stdio: 'inherit' });
+    if (result.error) throw result.error;
+    process.exitCode = result.status ?? ExitCode.SUCCESS;
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+
+  if (verbose) {
+    const elapsedMs = performance.now() - startedAt;
+    console.log(colors.dim(`\n✓ Completed in ${elapsedMs.toFixed(2)}ms.`));
+  }
+}
+
+const BACKEND_ORDER_NOTE = {
+  native: 'it is first in priority (Native x86-64 -> Bytecode + PVM -> Tree-Walking Interpreter) and supports this program.',
+  bytecode: 'Native x86-64 cannot run this program (see above), and Bytecode + PVM is next in priority.',
+  interpreter: 'neither Native x86-64 nor Bytecode + PVM can run this program (see above) — the Tree-Walking Interpreter is the final, always-available fallback.',
+};
+
+/** `pari --explain-backend <file.pr>` (Phase 14) — analysis only, never executes the program. Reports every backend's capability verdict and which one automatic selection would pick, and why. */
+function printExplainBackend(source, filePath) {
+  const parsed = lexAndParse(source, filePath);
+  if (!parsed) return;
+
+  const analysis = new SemanticAnalyzer(parsed.program, filePath).analyze();
+  if (!analysis.success) {
+    logger.error(`${analysis.diagnostics.length} semantic error(s) found — run "pari --analyze" for details.`);
+    console.log('');
+    printDiagnosticList(analysis.diagnostics);
+    process.exitCode = ExitCode.COMPILER_ERROR;
+    return;
+  }
+
+  const selection = selectBackend(parsed.program, filePath);
+
+  console.log(colors.bold(`Backend Selection for ${filePath}`));
+  console.log(colors.dim('-'.repeat(72)));
+  console.log('');
+
+  for (const evaluation of selection.evaluations) {
+    const status = evaluation.supported ? colors.green('SUPPORTED') : colors.red('UNSUPPORTED');
+    console.log(`${padColumn(evaluation.label, 26)}${status}`);
+    if (!evaluation.supported) {
+      console.log(colors.dim(`  Reason: Feature "${evaluation.feature}" is not supported — ${evaluation.reason}`));
+    } else if (evaluation.id === selection.selected) {
+      console.log(colors.dim('  Selected backend.'));
+    }
+    console.log('');
+  }
+
+  console.log(colors.bold(`Selected: ${selection.selectedLabel}`));
+  console.log(colors.dim(`  Because ${BACKEND_ORDER_NOTE[selection.selected]}`));
 }
 
 /**
@@ -554,7 +726,7 @@ function compileToFile(source, filePath, { optimize = false } = {}) {
  * given. `--ir`/`--asm` are opt-in inspection only (native-compiler
  * brief §14) — printed before the executable is written, never instead of it.
  */
-function compileNativeToFile(source, filePath, { asm = false, ir = false, outputPath = null } = {}) {
+function compileNativeToFile(source, filePath, { asm = false, ir = false, emitIr = false, emitOptimizedIr = false, optimizerStats = false, outputPath = null } = {}) {
   const result = compileNative(source, filePath);
   if (!result.success) {
     if (result.diagnostics.length > 1) {
@@ -576,6 +748,23 @@ function compileNativeToFile(source, filePath, { asm = false, ir = false, output
     console.log(colors.bold(`Generated x86-64 for ${filePath}`));
     console.log(colors.dim('-'.repeat(72)));
     console.log(formatAsmListing(result.asmListing));
+    console.log('');
+  }
+  // The IR-optimizer brief's own requested format (§8): a plain "=== IR ==="
+  // header, not this file's usual colors.bold()+dim()-underline style —
+  // matched literally since these three flags are its own CLI surface.
+  if (emitIr) {
+    console.log('=== IR ===');
+    console.log(formatIR(result.threeAddressIR));
+    console.log('');
+  }
+  if (emitOptimizedIr) {
+    console.log('=== OPTIMIZED IR ===');
+    console.log(formatIR(result.optimizedIR));
+    console.log('');
+  }
+  if (optimizerStats) {
+    console.log(formatOptimizerStatistics(result.optimizerStatistics));
     console.log('');
   }
 

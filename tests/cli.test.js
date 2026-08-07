@@ -124,6 +124,17 @@ describe('CLI — successful commands (exit 0)', () => {
     assert.match(stdout, /CLI\s+pari/);
   });
 
+  // Production-readiness audit: --version's own "Backends" line still only
+  // said "Tree-Walking Interpreter | Bytecode Generator" despite the
+  // Native x86-64 backend (Phase 13) and the Adaptive Execution Engine
+  // (Phase 14) both existing and being extensively documented elsewhere —
+  // under-reporting the CLI's own live architecture.
+  test('pari --version also reports the Native backend and the Adaptive Execution Engine', () => {
+    const { stdout } = pari(['--version']);
+    assert.match(stdout, /Backends\s+Tree-Walking Interpreter \| Bytecode Generator \| Native x86-64/);
+    assert.match(stdout, /Execution\s+Automatic backend selection/);
+  });
+
   test('pari --version\'s pass count matches the Optimizer\'s own DEFAULT_PASSES list', () => {
     const { stdout } = pari(['--version']);
     const match = stdout.match(/Optimizer\s+Bytecode Optimizer \((\d+) Passes\)/);

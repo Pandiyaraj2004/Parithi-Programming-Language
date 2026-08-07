@@ -288,3 +288,67 @@ describe('Parity — larger programs', () => {
     assertParity(source);
   });
 });
+
+describe('Parity — Unified Loop Model (§36)', () => {
+  test('a bare "loop" with a counted "break"', () => {
+    assertParity('hold i = 1\nloop\n    say i\n    if i == 5\n        break\n    end if\n    i = i + 1\nend loop');
+  });
+
+  test('"continue" inside a "loop"', () => {
+    assertParity('hold i = 0\nloop\n    i = i + 1\n    if i == 3\n        continue\n    end if\n    say i\n    if i == 5\n        break\n    end if\nend loop');
+  });
+
+  test('"break <expression>" as the loop\'s value, assigned and printed', () => {
+    assertParity('hold items = box(3, 7, 10, 15)\nhold i = 0\nhold result = loop\n    hold item = items[i]\n    if item == 10\n        break item\n    end if\n    i = i + 1\nend loop\nsay result');
+  });
+
+  test('a bare "break" makes the loop expression Empty', () => {
+    assertParity('hold r = loop\n    break\nend loop\nsay type(r)');
+  });
+
+  test('nested loops: inner break value never reaches the outer result', () => {
+    assertParity('hold result = loop\n    loop\n        break 10\n    end loop\n    break 20\nend loop\nsay result');
+  });
+
+  test('multiple distinct break paths (if/else) agree on the loop\'s final value', () => {
+    assertParity('hold cond = false\nhold r = loop\n    if cond\n        break 1\n    else\n        break 2\n    end if\nend loop\nsay r');
+  });
+
+  test('a loop inside a function call, with "return" distinct from "break"', () => {
+    assertParity('task find()\n    loop\n        if true\n            break 42\n        end if\n    end loop\n    return 1\nend task\nsay find()');
+    assertParity('task find()\n    loop\n        return 42\n    end loop\n    return 1\nend task\nsay find()');
+  });
+
+  test('a recursive function whose body contains a loop', () => {
+    assertParity('task countDown(n)\n    loop\n        if n == 0\n            return 0\n        end if\n        break\n    end loop\n    return n\nend task\nsay countDown(3)\nsay countDown(0)');
+  });
+
+  test('"while"/"repeat" used as expressions, evaluating to their "break <expression>" value', () => {
+    assertParity('hold x = 0\nhold r = while x < 10\n    x = x + 1\n    if x == 5\n        break x\n    end if\nend while\nsay r');
+    assertParity('hold r = repeat 10 as i\n    if i == 4\n        break i\n    end if\nend repeat\nsay r');
+  });
+
+  test('"while" as an expression with no "break" (natural exit) evaluates to Empty', () => {
+    assertParity('hold x = 10\nhold r = while x < 5\n    x = x + 1\nend while\nsay type(r)');
+  });
+
+  test('a loop combined with array indexing and a Standard Library call', () => {
+    assertParity('hold items = box("a", "b", "c")\nhold i = 0\nloop\n    if i >= len(items)\n        break\n    end if\n    say upper(items[i])\n    i = i + 1\nend loop');
+  });
+
+  test('a runtime error (division by zero) inside a loop reports the same error code on both backends', () => {
+    assertParity('loop\n    say 1 / 0\nend loop');
+  });
+
+  test('deeply nested loops (5 levels), each "break" terminating only its own level', () => {
+    const source = [
+      'hold count = 0',
+      'loop', 'loop', 'loop', 'loop', 'loop',
+      '    count = count + 1',
+      '    break',
+      'end loop', 'break', 'end loop', 'break', 'end loop', 'break', 'end loop', 'break', 'end loop',
+      'say count',
+    ].join('\n');
+    assertParity(source);
+  });
+});

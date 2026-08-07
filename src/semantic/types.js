@@ -29,6 +29,20 @@ export function isNumeric(type) {
   return NUMERIC.has(type);
 }
 
+// Types with a well-defined total order — the only ones `>`/`<`/`>=`/`<=`
+// (as opposed to `==`/`!=`, which accept anything via deep equality) may
+// meaningfully compare. Array and Boolean are deliberately excluded: a
+// production-readiness audit found `box(1,2) > box(3,4)` and `true > false`
+// both passed Semantic Analysis silently and fell through to a raw JS `<`/
+// `>` at runtime — for Arrays, JS's own Array-to-string coercion (lexical,
+// not element-wise); for Booleans, numeric coercion (`true`=1, `false`=0) —
+// neither of which MASTER_DOCUMENT.md §13.2 documents as meaningful.
+const ORDERABLE = new Set([DataType.NUMBER, DataType.DECIMAL, DataType.STRING]);
+
+export function isOrderable(type) {
+  return type === DataType.UNKNOWN || type === DataType.EMPTY || ORDERABLE.has(type);
+}
+
 /**
  * True if `a` and `b` may appear together in an assignment, comparison, or
  * argument-passing context without a type error. EMPTY (a variable whose

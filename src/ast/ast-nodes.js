@@ -24,6 +24,7 @@ export const NodeType = Object.freeze({
   OTHER_CLAUSE: 'OtherClause',
   REPEAT_STATEMENT: 'RepeatStatement',
   WHILE_STATEMENT: 'WhileStatement',
+  LOOP_EXPRESSION: 'LoopExpression',
   BREAK_STATEMENT: 'BreakStatement',
   CONTINUE_STATEMENT: 'ContinueStatement',
   TASK_DECLARATION: 'TaskDeclaration',

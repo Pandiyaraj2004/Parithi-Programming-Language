@@ -1,0 +1,18 @@
+# "continue" affects only the nearest enclosing loop, exactly as it
+# already does for "while"/"repeat".
+
+hold i = 0
+
+loop
+    i = i + 1
+
+    if i == 3
+        continue
+    end if
+
+    say i
+
+    if i == 5
+        break
+    end if
+end loop
