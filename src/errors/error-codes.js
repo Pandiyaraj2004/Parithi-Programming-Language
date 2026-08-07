@@ -9,6 +9,7 @@ export const ErrorPhase = Object.freeze({
   PARSING: 'Parsing',
   SEMANTIC_ANALYSIS: 'Semantic Analysis',
   INTERPRETATION: 'Interpretation',
+  NATIVE_COMPILATION: 'Native Compilation',
 });
 
 export const ERROR_CODES = Object.freeze({
@@ -39,6 +40,9 @@ export const ERROR_CODES = Object.freeze({
   P025: { name: 'Cannot index non-array value', phase: ErrorPhase.SEMANTIC_ANALYSIS },
   P026: { name: 'Array element type mismatch', phase: ErrorPhase.SEMANTIC_ANALYSIS },
   P027: { name: 'Negative array index', phase: ErrorPhase.INTERPRETATION },
+  P028: { name: 'Math domain error', phase: ErrorPhase.INTERPRETATION },
+  P029: { name: 'String index out of range', phase: ErrorPhase.INTERPRETATION },
+  P030: { name: 'Unsupported native compilation feature', phase: ErrorPhase.NATIVE_COMPILATION },
 });
 
 export function describeErrorCode(code) {

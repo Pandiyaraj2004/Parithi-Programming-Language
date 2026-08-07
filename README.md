@@ -13,24 +13,60 @@ Full language specification: [docs/MASTER_DOCUMENT.md](docs/MASTER_DOCUMENT.md)
 
 ## Status
 
-**v1.0 — stable release, now including Arrays.** A complete, fully-tested
-implementation of the language specified in
+**v1.0 — stable release, now including Arrays, a Bytecode Generator, a
+Parithi Virtual Machine, and a Bytecode Optimizer.** A complete,
+fully-tested implementation of the language specified in
 [docs/MASTER_DOCUMENT.md](docs/MASTER_DOCUMENT.md): Lexer → Parser →
-Semantic Analyzer → Tree-Walking Interpreter → Runtime, behind a
-professional CLI (`pari`). Every keyword, language rule, built-in, and
-documented error code has been individually verified against the
-specification — see [docs/PHASE8_AUDIT_REPORT.md](docs/PHASE8_AUDIT_REPORT.md)
-and [docs/RELEASE_VERIFICATION_REPORT.md](docs/RELEASE_VERIFICATION_REPORT.md).
-**Phase 9** then added Arrays (`box`) — the first language-surface change
-since that audit — end-to-end across every layer; see
-[MASTER_DOCUMENT.md §28](docs/MASTER_DOCUMENT.md#28-arrays-phase-9) and
-[CHANGELOG.md](CHANGELOG.md). 454 automated tests pass; no known
-implementation bugs.
+Semantic Analyzer, behind a professional CLI (`pari`), executed by
+**either** of two independent, output-identical backends — the
+Tree-Walking Interpreter (default) or the Parithi Virtual Machine. Every
+keyword, language rule, built-in, and documented error code has been
+individually verified against the specification — see
+[docs/PHASE8_AUDIT_REPORT.md](docs/PHASE8_AUDIT_REPORT.md) and
+[docs/RELEASE_VERIFICATION_REPORT.md](docs/RELEASE_VERIFICATION_REPORT.md).
+**Phase 9** added Arrays (`box`) — the first language-surface change since
+that audit — end-to-end across every layer
+([MASTER_DOCUMENT.md §28](docs/MASTER_DOCUMENT.md#28-arrays-phase-9)).
+**Phase 10** added a **Bytecode Generator** — `pari --compile` translates
+the validated AST into Parithi Bytecode (`.pbc`)
+([§29](docs/MASTER_DOCUMENT.md#29-bytecode-phase-10)). **Phase 11** then
+added the **Parithi Virtual Machine (PVM)** — `pari <file.pbc>` executes
+that bytecode directly
+([§30](docs/MASTER_DOCUMENT.md#30-parithi-virtual-machine-phase-11)).
+**Phase 12** added a **Bytecode Optimizer** — `pari <file.pr> --optimize`
+runs 8 ordered passes (constant folding/propagation, dead-code/jump/
+peephole/stack/constant-pool optimization, plus jump-target repair)
+between the Generator and the Validator/PVM, shrinking a program's
+bytecode without changing what it does
+([§31](docs/MASTER_DOCUMENT.md#31-bytecode-optimizer-phase-12)). All four
+phases changed **zero lines** in the Lexer, Parser, AST, Semantic
+Analyzer, Interpreter, or Runtime — see [CHANGELOG.md](CHANGELOG.md).
+**Phase 13 (in progress)** is adding two things in parallel: a **Standard
+Library** — sub-phase 13a shipped Math/String/Array/Type/System (~45 new
+built-ins — `sqrt`, `upper`, `clear`, `boolean`, `sleep`, and more), with
+File/JSON/Date & Time/HTTP still to come
+([§32](docs/MASTER_DOCUMENT.md#32-standard-library-phase-13)) — and a
+**Native Compiler**: `pari --native <file.pr>` hand-compiles Parithi
+straight to a real, standalone Windows (x86-64) `.exe` — no Node.js, no
+`pari`, no PVM involved once compiled — by writing the PE executable
+format and x86-64 machine code directly (no assembler/linker exists on
+the reference build machine). This is a genuine, tested, actually-executed
+foundation, **not** full native compilation of the language yet: today it
+compiles only `say` with String literal arguments; every other construct
+fails with a clean diagnostic rather than a wrong `.exe`
+([§33](docs/MASTER_DOCUMENT.md#33-native-compiler-phase-13-x86-64-backend)).
+**802 automated tests pass**, including a dedicated 39-test suite proving
+the Interpreter and the PVM produce byte-for-byte identical output, exit
+codes, and error codes for the same programs, a further 54-test suite
+proving the same parity holds for optimized bytecode, a 17-test suite
+proving it for every new Standard Library built-in, and a 37-test native
+suite that actually writes and executes real `.exe` files (not just
+inspects compiled bytes); no known implementation bugs.
 
 Deliberately **not** in v1.0, by explicit design decision rather than
 oversight (see [Known Limitations](#known-limitations) below): Maps/
-dictionaries, object-oriented programming, modules, exception handling, and
-a bytecode VM.
+dictionaries, object-oriented programming, modules, and exception
+handling.
 
 ## Installation
 
@@ -72,6 +108,176 @@ if age is at least 1
 end if
 ```
 
+## Data Types
+
+Parithi has **six** data types. Every one of them is a real, implemented
+`RuntimeValue` class in [`src/runtime/runtime-value.js`](src/runtime/runtime-value.js)
+(`NumberValue`, `DecimalValue`, `StringValue`, `BooleanValue`, `EmptyValue`,
+`ListValue`) and a real static type in
+[`src/semantic/types.js`](src/semantic/types.js)'s `DataType` enum — this
+section documents exactly those six, nothing more, matching
+[MASTER_DOCUMENT.md §12.2](docs/MASTER_DOCUMENT.md#122-data-types),
+[§14.4](docs/MASTER_DOCUMENT.md#144-static-type-system), and
+[§28](docs/MASTER_DOCUMENT.md#28-arrays-phase-9) exactly. (There's also an
+internal `Unknown` type, but it isn't a data type a value can ever
+actually have — see [Assignment rules and limitations](#assignment-rules-and-limitations)
+below.)
+
+| Type | Represents | Created with |
+|---|---|---|
+| **Number** | A whole number | `hold age = 25` |
+| **Decimal** | A number with a fractional part | `hold price = 19.99` |
+| **String** | Text | `hold name = "Parithi"` |
+| **Boolean** | A truth value | `hold isLoggedIn = true` |
+| **Empty** | The deliberate absence of a value | `hold data = empty` |
+| **Array** | An ordered, resizable, mutable collection | `hold nums = box(1, 2, 3)` |
+
+### How type inference works
+
+A variable's type is **inferred once**, from the expression on the
+right-hand side of its **first** assignment — Parithi has no type
+annotation syntax anywhere in its grammar, so this inferred type is the
+only type information that ever exists for a variable. It is then
+**locked**: every later assignment to that variable must produce a
+*compatible* type, or the compiler rejects the program before it ever
+runs (`P002`, a compile-time error, not a runtime one).
+
+```
+hold age = 20        # inferred: Number, locked from here on
+age = 21             # fine — 21 is also Number
+age = "twenty"        # rejected before the program runs
+```
+```
+Error P002:
+Cannot assign String to Number.
+Hint: "age" was inferred as Number from its declaration.
+```
+
+### `empty` and type locking
+
+`empty` is special: assigning it to a fresh `hold` variable does **not**
+lock a type yet. The variable's type instead locks on its **first
+non-`empty` assignment** — this lets you declare a variable before you
+know what it will hold, without a spurious type error:
+
+```
+hold data = empty
+say type(data)        # Empty — not locked yet
+data = 42
+say data               # 42
+say type(data)          # Number — locked now
+data = "oops"            # rejected — locked to Number, not Empty anymore
+```
+```
+Error P002:
+Cannot assign String to Number.
+```
+
+One subtlety worth knowing: once a variable *is* locked (say, to Number),
+you can still assign `empty` back to it later — `empty` is always
+compatible with every type, in both directions — but doing so does
+**not** unlock or reset the variable's type. `data = empty` after the
+example above is allowed, but `data` remains Number-typed, so a
+following `data = "x"` would still be rejected. Locking is one-way and
+permanent, for exactly the variable's first real type.
+
+`empty` is also the implicit return value of a `task` that reaches its
+end without ever hitting a `return` statement.
+
+### Number vs. Decimal compatibility
+
+Number and Decimal are two distinct labels — `type(10)` reports
+`"Number"`, `type(10.0)` reports `"Decimal"`, and diagnostics always show
+them separately — but they are always **compatible** with each other for
+assignment, comparison, and passing as function arguments. This matters
+because Parithi can't always know from the source text alone whether an
+arithmetic result will be a whole number or a fraction:
+
+```
+hold a = 10
+hold b = 3.5
+say a + b              # 13.5
+say type(a + b)         # Decimal
+
+say 7 / 2               # 3.5
+say type(7 / 2)          # Decimal — division promotes when the result isn't whole
+```
+
+A variable inferred as Number from `hold age = 20` can therefore later be
+reassigned a Decimal-producing expression (`age = age / 2`) without a type
+error — but String, Boolean, and Empty remain strictly separate from
+Numeric and from each other; this loosening applies only within the
+Number/Decimal family.
+
+### Array (`box`) — implemented in Phase 9
+
+Arrays are ordered, resizable, **mutable** collections created with the
+`box(...)` keyword-call:
+
+```
+hold nums = box(1, 2, 3)
+say nums                 # [1, 2, 3]
+say type(nums)             # Array
+
+push(nums, 4)
+say nums                   # [1, 2, 3, 4]
+say len(nums)                # 4
+say nums[0]                   # 1 — 0-based indexing
+nums[0] = 100
+say nums                       # [100, 2, 3, 4]
+```
+
+Rules worth knowing, all real and enforced (not aspirational):
+
+- **0-based indexing** — `nums[0]` is the first element (a deliberate
+  choice against `ARRAYS_DESIGN.md`'s own 1-based recommendation).
+- **Reference semantics** — `hold b = nums` makes `b` and `nums` the
+  *same* underlying array; mutating one mutates both. This is the one
+  type in Parithi where assignment doesn't behave like copying a scalar.
+- **Deep (structural) equality** — `==`/`!=` and `contains()` compare
+  arrays element-by-element, recursively; two separately-built arrays
+  with identical contents are `==` even though they're different objects.
+  This doesn't contradict reference semantics above — assignment and
+  `==` are different operations.
+- **Homogeneous elements** — every element in one array must share the
+  same static type, with `empty` always exempted from the check in
+  either direction:
+  ```
+  hold ok = box(1, empty, 3)      # fine — empty never conflicts
+  hold bad = box(1, "two")        # rejected
+  ```
+  ```
+  Error P026:
+  Array elements must share the same type — found Number and String in the same "box(...)".
+  ```
+- **Array is a flat, non-parameterized type** — there's no "Array of
+  Number" vs. "Array of String" distinction; every array's static type is
+  simply `Array`, and `nums[0]`'s inferred type is `Unknown` (open, like a
+  function parameter) rather than tracking what's actually inside.
+- **Built-ins:** `push`, `pop`, `insert`, `remove`, `sort`, `reverse`,
+  `contains` (Phase 9), plus `len`/`length`, `clear`, `isEmpty`, and
+  `indexOf` (Phase 13) — see [MASTER_DOCUMENT.md §28.5](docs/MASTER_DOCUMENT.md#285-array-built-in-functions)
+  for the full reference.
+
+### Assignment rules and limitations
+
+- **No implicit type coercion, ever.** `"Age: " + age` (String + Number)
+  is a compile-time error — convert explicitly with `text(age)` first.
+  `+` only concatenates when **both** sides are already String.
+- **Function parameters have no static type.** Parithi's grammar has no
+  parameter type-annotation syntax, so every parameter is internally
+  `Unknown` — compatible with anything, so using it inside the function
+  body never produces a spurious type error. This is *not* a seventh data
+  type a value can hold; no variable, literal, or built-in can ever
+  produce an `Unknown`-typed *value* — it only ever describes "this
+  parameter's type isn't statically known yet."
+- **No Maps/dictionaries, and no general Objects** — see
+  [Known Limitations](#known-limitations). Arrays are the only collection
+  type in v1.0.
+- **No numeric width limits are enforced** — Number/Decimal are backed by
+  JS's native `number` in v1.0; there's no overflow error for very large
+  values.
+
 ## Feature List
 
 - **Data types:** Number, Decimal, String, Boolean, Empty, Array — static
@@ -103,14 +309,57 @@ end if
   both compile time and defensively at runtime.
 - **I/O:** `say` (multi-value, space-joined output), `ask` (prompts and
   always returns a String).
-- **Error reporting:** 27 stable error codes (`P001`–`P027`) across
-  Lexing/Parsing/Semantic Analysis/Interpretation — each carries a code, a
-  plain-English message, a source location, and a corrective hint. A raw
-  JavaScript stack trace reaching the terminal is treated as a bug.
-- **CLI (`pari`):** program execution plus four pipeline-introspection
-  flags (`--tokens`, `--ast`, `--analyze`, `--runtime`), `--version`,
-  `--help`, `--verbose`, four distinct exit codes, and "did you mean...?"
-  suggestions for mistyped flags and filenames.
+- **Error reporting:** 30 stable error codes (`P001`–`P030`) across
+  Lexing/Parsing/Semantic Analysis/Interpretation/Native Compilation —
+  each carries a code, a plain-English message, a source location, and a
+  corrective hint. A raw JavaScript stack trace reaching the terminal is
+  treated as a bug.
+- **Bytecode Generator:** `--bytecode`/`--compile` translate the validated
+  AST into Parithi Bytecode (`.pbc`) — a separate, additive backend; see
+  [MASTER_DOCUMENT.md §29](docs/MASTER_DOCUMENT.md#29-bytecode-phase-10).
+- **Parithi Virtual Machine (PVM):** `pari <file.pbc>` / `--run-bytecode`
+  execute compiled bytecode directly — a second, independent execution
+  engine, proven output-identical to the Interpreter for every construct
+  in the language; see
+  [MASTER_DOCUMENT.md §30](docs/MASTER_DOCUMENT.md#30-parithi-virtual-machine-phase-11).
+- **Bytecode Optimizer:** `--optimize` runs 8 ordered, independently-tested
+  passes (constant folding, constant propagation, dead-code elimination,
+  jump optimization, peephole optimization, stack optimization, constant
+  pool optimization, label/jump-target cleanup) between the Bytecode
+  Generator and the Validator/PVM — re-validating after every single pass
+  and rejecting anything invalid before it can execute. `--stats` prints
+  an instruction/constant-pool before-vs-after report; `--disassemble`
+  prints the optimized listing. Proven output-identical to the
+  unoptimized Interpreter/PVM for every construct in the language; see
+  [MASTER_DOCUMENT.md §31](docs/MASTER_DOCUMENT.md#31-bytecode-optimizer-phase-12).
+- **Standard Library (in progress):** ~45 new built-ins across Math
+  (`sqrt`, `pow`, `abs`, `floor`, `ceil`, `min`/`max`, `randomInt`,
+  `sin`/`cos`/`tan`, `log`, `exp`), String (`upper`, `lower`, `trim`,
+  `split`, `join`, `replace`, `startsWith`/`endsWith`, `substring`,
+  `indexOf`/`lastIndexOf`, `repeatText`, `reverseText`), Array (`clear`,
+  `length`, `isEmpty`), Type (`boolean`, `isNumber`, `isText`,
+  `isBoolean`), and System (`sleep`, `version`, `platform`,
+  `workingDirectory`, `arguments`) — every one argument-validated,
+  proven output-identical between the Interpreter and the PVM, and
+  additive (nothing from Phase 6/9's built-ins changed). File/JSON/Date &
+  Time/HTTP are still to come; see
+  [MASTER_DOCUMENT.md §32](docs/MASTER_DOCUMENT.md#32-standard-library-phase-13).
+- **Native Compiler (Windows x86-64, minimal foundation):** `--native`
+  compiles straight to a real, standalone PE `.exe` — hand-written x86-64
+  machine code and PE executable format (no assembler/linker exists on
+  the reference build machine, so every byte is produced directly and
+  verified by actually executing generated `.exe` files, not just
+  inspecting them). Today compiles only `say` with String literal
+  arguments; every other construct fails with a clean diagnostic, never a
+  silently-wrong executable. `--ir`/`--asm` inspect the native IR/generated
+  instructions; see
+  [MASTER_DOCUMENT.md §33](docs/MASTER_DOCUMENT.md#33-native-compiler-phase-13-x86-64-backend).
+- **CLI (`pari`):** program execution plus seven pipeline-introspection/
+  execution flags (`--tokens`, `--ast`, `--analyze`, `--runtime`,
+  `--bytecode`, `--compile`, `--run-bytecode`), three optimizer flags
+  (`--optimize`, `--stats`, `--disassemble`), `--native` (plus `-o`,
+  `--ir`, `--asm`), `--version`, `--help`, `--verbose`, four distinct exit
+  codes, and "did you mean...?" suggestions for mistyped flags and filenames.
 
 ## CLI Reference
 
@@ -120,6 +369,16 @@ pari --tokens <file.pr>     Print the lexer's token stream, then exit
 pari --ast <file.pr>        Print the parsed AST as a tree, then exit
 pari --analyze <file.pr>    Run semantic analysis (symbol tables + diagnostics), then exit
 pari --runtime <file.pr>    Execute, then print runtime diagnostics (environment/call stack)
+pari --bytecode <file.pr>   Print the generated Parithi Bytecode listing, then exit (does not execute)
+pari --compile <file.pr>    Compile to a .pbc bytecode file next to the source, then exit (does not execute)
+pari <file.pbc>             Execute compiled bytecode directly on the PVM (auto-detected by extension)
+pari --run-bytecode <file>  Execute on the PVM — accepts a .pbc file, or a .pr file (compiled in memory first)
+pari <file.pr> --optimize   Run the 8-pass bytecode optimizer, then print the optimized listing (composes with --compile/--bytecode/--run-bytecode/plain run)
+pari <file.pr> --stats      Print the optimizer's before/after instruction and constant-pool report
+pari <file.pr> --disassemble  Print a human-readable optimized bytecode listing
+pari --native <file.pr>      Compile to a real, standalone Windows (x86-64) .exe, next to the source
+pari --native <file.pr> -o <path>   ...write it to <path> instead
+pari --native <file.pr> --ir/--asm  ...also print the native IR / generated x86-64 instructions
 pari --version              Print version information (language, compiler, Node, platform)
 pari --help / -h            Print usage and the flag reference
 pari <file.pr> --verbose    Execute, then print total execution time
@@ -194,7 +453,16 @@ pari --tokens examples/hello.pr
 pari --ast examples/hello.pr
 pari --analyze examples/hello.pr
 pari --runtime examples/hello.pr
+pari --bytecode examples/hello.pr   # print the compiled bytecode listing
+pari --compile examples/hello.pr    # write examples/hello.pbc
+pari examples/hello.pbc             # execute it directly on the PVM
+pari --run-bytecode examples/hello.pr  # compile + execute on the PVM, no .pbc file written
+pari examples/calculator.pr --optimize # print the optimized bytecode listing
+pari examples/calculator.pr --stats    # print the before/after Optimization Report
+pari examples/calculator.pr --disassemble  # print a human-readable optimized listing
 pari examples/hello.pr --verbose
+pari --native examples/native/hello.pr        # write examples/native/hello.exe — run it directly, no Node.js involved
+pari --native examples/native/hello.pr --asm  # also print the generated x86-64 instructions
 pari --version
 pari --help
 ```
@@ -202,16 +470,39 @@ pari --help
 ## Project Architecture
 
 ```
-Source (.pr) → Lexer → Parser → AST → Semantic Analyzer → Tree-Walking Interpreter → Runtime → Output
+                                                    ┌─→ Tree-Walking Interpreter ────────────────────────────────────────┐
+Source (.pr) → Lexer → Parser → AST → Semantic Analyzer ─┤─→ Bytecode Generator → [Optimizer, optional] → Validator → PVM ─┼─→ Output
+                                                    └─→ Native IR → x86-64 Backend → PE .exe → Windows CPU ────────────┘
 ```
 
-There is no bytecode or VM in v1.0 — a program is parsed into an AST and
-executed directly by walking that tree. The runtime layer (`src/runtime/`)
-is a deliberately separable module — explicit `EnvironmentStack`/`CallStack`,
-boxed `RuntimeValue`s, a reusable `BuiltinRegistry` — so a future bytecode
-compiler/VM can be added later without changing the language surface or
-touching the Lexer, Parser, or AST node definitions. See
-[MASTER_DOCUMENT.md §27](docs/MASTER_DOCUMENT.md#27-conclusion).
+Three backends share the identical output of the Semantic Analyzer —
+none of them changes what "a valid Parithi program" means. `pari
+<file.pr>` (no flag) takes the Interpreter path; `pari <file.pbc>` /
+`--run-bytecode` take the Bytecode Generator → PVM path; `--native` takes
+the third — Native IR → hand-written x86-64 machine code → a real,
+standalone Windows `.exe`, executed directly by the CPU with no Node.js
+or `pari` process involved. The first two are proven, not just asserted,
+to produce identical output for identical programs (a dedicated 39-test
+parity suite); the third is proven the same way for the (currently small)
+subset it supports (a 37-test suite that actually executes generated
+`.exe` files, not just inspects them — see
+[MASTER_DOCUMENT.md §33.8](docs/MASTER_DOCUMENT.md#338-testing--real-execution-not-just-it-compiled)).
+`--bytecode`/`--compile` still just generate a listing/file without
+executing, exactly as Phase 10 left them. Adding `--optimize` inserts the
+8-pass Bytecode Optimizer (Phase 12) between the Generator and the
+Validator on the bytecode path — off by default, so plain
+`pari <file.pr>` / `pari <file.pbc>` are completely unaffected, and proven
+output-identical to the unoptimized path for every construct (a further
+54-test parity suite). The runtime layer (`src/runtime/`) is a
+deliberately separable module — explicit `EnvironmentStack`/`CallStack`,
+boxed `RuntimeValue`s, a reusable `BuiltinRegistry` — which is exactly what
+let every one of these additions get made with zero changes to the Lexer,
+Parser, AST, Semantic Analyzer, or Interpreter. See
+[MASTER_DOCUMENT.md §27](docs/MASTER_DOCUMENT.md#27-conclusion),
+[§29](docs/MASTER_DOCUMENT.md#29-bytecode-phase-10),
+[§30](docs/MASTER_DOCUMENT.md#30-parithi-virtual-machine-phase-11),
+[§31](docs/MASTER_DOCUMENT.md#31-bytecode-optimizer-phase-12), and
+[§33](docs/MASTER_DOCUMENT.md#33-native-compiler-phase-13-x86-64-backend).
 
 ```
 bin/pari.js          CLI entry point
@@ -222,12 +513,18 @@ src/
 ├── semantic/        Symbol tables, scope, static type checking
 ├── interpreter/     Tree-walking evaluator + built-in functions (incl. arrays, builtins/array.js)
 ├── runtime/         Environment/call stacks, boxed runtime values (incl. ListValue), builtin registry
-├── errors/          Shared error-code registry (P001–P027) and error classes
+├── errors/          Shared error-code registry (P001–P030) and error classes
 ├── cli/             Argument parsing, command dispatch, help/version screens
-└── utils/           Logging, ANSI colors, error-message formatting
-examples/            Eleven runnable .pr sample programs (see table above)
-tests/               454 tests across 9 files (node:test)
-docs/                Language spec, audit report, release notes, arrays design proposal
+├── utils/           Logging, ANSI colors, error-message formatting
+├── bytecode/        AST → Parithi Bytecode (.pbc): opcodes, generator, validator, text/binary writers
+├── vm/              Executes Parithi Bytecode: operand stack, call frames, instruction dispatcher
+├── optimizer/       8-pass bytecode optimizer (pass-manager.js + passes/), statistics, --stats report
+├── stdlib/          Standard Library (Phase 13, in progress): math/, string/, array/, type/, system/ — file/json/datetime/http/ pending
+└── native/          Native (x86-64) backend (Phase 13, minimal foundation): codegen/, pe/ — hand-written PE writer + x86-64 encoder, `say`-with-strings only
+examples/            Eleven runnable .pr sample programs (see table above), plus examples/stdlib/ (four more) and examples/native/ (two — the only programs that compile natively today)
+tests/               802 tests across 18 files (node:test), incl. tests/native/ which actually executes generated .exe files
+benchmarks/          optimizer-benchmark.mjs, native-benchmark.mjs — before/after instruction count/VM timing, and native-vs-Interpreter/PVM timing (dev tools, not shipped)
+docs/                Language spec, audit report, release notes, arrays design proposal, optimizer benchmarks
 ```
 
 Full detail: [docs/MASTER_DOCUMENT.md §10](docs/MASTER_DOCUMENT.md#10-project-folder-structure).
@@ -238,15 +535,33 @@ Full detail: [docs/MASTER_DOCUMENT.md §10](docs/MASTER_DOCUMENT.md#10-project-f
 npm test
 ```
 
-454 tests across 9 files: `foundation`, `lexer`, `parser`, `semantic`,
+802 tests across 18 files: `foundation`, `lexer`, `parser`, `semantic`,
 `interpreter`, `e2e` (runs the real files in `examples/` through the full
 pipeline), `error-messages` (verifies every error class/stage produces a
 code, message, location, and helpful suggestion), `runtime` (RuntimeValue,
 EnvironmentStack, Runtime, ExecutionContext, BuiltinRegistry, leak-proofing,
-and defensive runtime errors), and `cli` (spawns the real `pari` binary to
-check exit codes, file handling, suggestions, and console output
-end-to-end). Full audit results (every keyword, rule, built-in, and error
-code individually verified) are in
+and defensive runtime errors), `bytecode` (Generator/Validator correctness
+across every construct, plus binary/text writer round-trip fidelity), `vm`
+(every opcode, runtime object, recursion, arrays, stack overflow, and
+invalid/corrupted bytecode on the PVM), `vm-parity` (the Interpreter and
+PVM proven to produce identical output/exit/error codes for every
+construct and all real examples), `optimizer` (each of the 8 passes
+verified independently, plus nested loops/recursion/`choose`/arrays/`stop`/
+built-ins/runtime errors/a 10,000+ instruction program, and a parity
+harness proving the Interpreter and the optimized PVM stay
+output-identical), `math`/`string`/`array` (every new Phase 13 built-in's
+normal cases, invalid arguments, Unicode strings, and domain/range errors),
+`stdlib` (Type/System libraries plus an Interpreter-vs-PVM parity sweep
+across every new built-in in every category), `native` (the one suite
+that doesn't stop at "the compiler produced bytes" — every success-path
+test writes a real PE `.exe` and *executes* it via `spawnSync`, checking
+genuine stdout/exit code; every unsupported-feature case is asserted to
+fail with a clean P030, never a crash; a 3-way Interpreter/PVM/Native
+parity sweep for the currently-supported subset), and `cli` (spawns the
+real `pari` binary to check exit codes, file handling, suggestions,
+`--bytecode`/`--compile`/`--run-bytecode`/`.pbc`/`--optimize`/`--stats`/
+`--disassemble`, and console output end-to-end). Full audit results (every
+keyword, rule, built-in, and error code individually verified) are in
 [docs/PHASE8_AUDIT_REPORT.md](docs/PHASE8_AUDIT_REPORT.md).
 
 ## Known Limitations
@@ -270,8 +585,34 @@ By explicit design decision, not oversight — see
 - **No file or system built-ins** — programs interact with the world only
   through `say`/`ask`.
 - **Call-stack traces truncate** to the first 2 frames plus a count for
-  very deep stacks (e.g. `... (498 more)`); full N-frame traces are future
-  work alongside the planned bytecode VM.
+  very deep stacks (e.g. `... (498 more)`) — on both backends identically;
+  full N-frame traces remain future work.
+- **The PVM is not the default** — `pari <file.pr>` always runs on the
+  Tree-Walking Interpreter; the PVM (Phase 11, §30) exists and is proven
+  output-identical, but switching the default (and gating the Interpreter
+  behind `--interpret`) is a deliberate future decision, not automatic.
+- **No loop-aware optimization** — the Phase 12 optimizer (§31) reduces
+  static instruction count and constant-pool size (largest wins in
+  constant-heavy/straight-line code); it does not perform loop-invariant
+  code motion or strength reduction, so a tight loop's wall-clock time
+  still tracks iteration count, not program size (§23 item 8).
+- **Standard Library is partial (Phase 13 in progress)** — Math/String/
+  Array/Type/System shipped in sub-phase 13a; File, JSON, Date & Time,
+  and HTTP remain (§32). HTTP in particular needs a genuine architecture
+  decision first — Parithi has no async/await/Promises anywhere, and the
+  project has kept zero runtime dependencies since v1.0, so a *blocking*
+  `get()`/`post()` needs either a `worker_threads`/`Atomics.wait` bridge,
+  shelling out to `curl`, or an actual dependency (§32.10).
+- **Native compiler is a minimal foundation, not full-language native
+  compilation (Phase 13)** — `--native` compiles only `say` with String
+  literal arguments today; variables, arithmetic, control flow,
+  functions/recursion, Arrays, and every Standard Library built-in are
+  not yet supported and fail with a clean diagnostic, never a
+  silently-wrong `.exe` (§33.9). Windows x86-64 only — no
+  Linux/macOS/ARM64 target exists or was attempted. No assembler or
+  linker exists on the reference build machine, so every PE header and
+  x86-64 instruction is hand-written and verified by actually executing
+  generated executables, not merely inspecting them (§33.2/§33.8).
 
 ## Contributing
 

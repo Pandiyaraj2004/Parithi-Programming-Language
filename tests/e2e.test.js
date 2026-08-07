@@ -123,6 +123,77 @@ describe('End-to-End: Real Example Files', () => {
   });
 });
 
+describe('End-to-End: examples/stdlib/ (Phase 13, §32)', () => {
+  test('calculator.pr demonstrates the Math library additions', () => {
+    assert.deepEqual(runFile('stdlib/calculator.pr'), [
+      'sqrt(16): 4',
+      'pow(16, 3): 4096',
+      'abs(-16): 16',
+      'floor(7.8): 7',
+      'ceil(7.2): 8',
+      'min(16, 3): 3',
+      'max(16, 3): 16',
+      'log(1): 0',
+      'exp(0): 1',
+      'sin(0): 0',
+      'cos(0): 1',
+    ]);
+  });
+
+  test('random-number-generator.pr runs without error and every roll/value is in range', () => {
+    const output = runFile('stdlib/random-number-generator.pr');
+    assert.equal(output.length, 7);
+    assert.equal(output[0], 'Rolling a six-sided die 5 times:');
+    for (const line of output.slice(1, 6)) {
+      const n = Number(line);
+      assert.ok(Number.isInteger(n) && n >= 1 && n <= 6, `expected a die roll 1-6, got "${line}"`);
+    }
+    assert.match(output[6], /^A random number between 10 and 20 : \d+$/);
+  });
+
+  test('array-demo.pr demonstrates clear()/length()/isEmpty()/indexOf()', () => {
+    assert.deepEqual(runFile('stdlib/array-demo.pr'), [
+      'Array: ["apple", "banana", "cherry"]',
+      'length(): 3',
+      'isEmpty(): false',
+      "indexOf('banana'): 1",
+      "indexOf('kiwi'): -1",
+      'After clear(): []',
+      'isEmpty() after clear(): true',
+    ]);
+  });
+
+  test('string-utilities.pr demonstrates the String library additions', () => {
+    assert.deepEqual(runFile('stdlib/string-utilities.pr'), [
+      'Original:   Hello, Parithi!  ',
+      'trim(): Hello, Parithi!',
+      'upper(): HELLO, PARITHI!',
+      'lower(): hello, parithi!',
+      'reverseText(): ihtiraP',
+      'split(): ["the", "quick", "brown", "fox"]',
+      "join() with '-': the-quick-brown-fox",
+      'replace(): bonono',
+      "startsWith('the'): true",
+      "endsWith('fox'): true",
+      'substring(4, 9): quick',
+      "indexOf('brown'): 10",
+      "lastIndexOf('o'): 17",
+      "contains('quick'): true",
+      "repeatText('ab', 3): ababab",
+    ]);
+  });
+
+  test('every stdlib example file passes semantic analysis with zero diagnostics', () => {
+    for (const file of ['stdlib/calculator.pr', 'stdlib/random-number-generator.pr', 'stdlib/array-demo.pr', 'stdlib/string-utilities.pr']) {
+      const source = readFileSync(join(examplesDir, file), 'utf-8');
+      const tokens = new Lexer(source, file).tokenize();
+      const program = new Parser(tokens, file).parseProgram();
+      const analysis = new SemanticAnalyzer(program, file).analyze();
+      assert.equal(analysis.success, true, `${file} should have zero semantic diagnostics`);
+    }
+  });
+});
+
 describe('Large / Complex Programs', () => {
   test('a program with five mutually-calling functions and deep expressions runs correctly', () => {
     const source = [

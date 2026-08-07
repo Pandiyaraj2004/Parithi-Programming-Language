@@ -10,16 +10,18 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { ExitCode } from '../src/cli/exit-codes.js';
+import { DEFAULT_PASSES } from '../src/optimizer/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PARI_BIN = join(__dirname, '..', 'bin', 'pari.js');
 const EXAMPLES = join(__dirname, '..', 'examples');
 const FIXTURES = join(__dirname, 'fixtures');
+const packageJson = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
 
 function pari(args, options = {}) {
   const result = spawnSync(process.execPath, [PARI_BIN, ...args], { encoding: 'utf-8', ...options });
@@ -101,9 +103,45 @@ describe('CLI — successful commands (exit 0)', () => {
     assert.equal(status, ExitCode.SUCCESS);
     assert.match(stdout, /Parithi Programming Language v1\.0/);
     assert.match(stdout, /Compiler\s+\d+\.\d+\.\d+/);
-    assert.match(stdout, /Node\s+v\d+/);
+    assert.match(stdout, /Node\.js\s+v\d+/);
     assert.match(stdout, /Build Date/);
     assert.match(stdout, /Platform/);
+  });
+
+  // Phase 13's follow-up CLI request: `pari --version` must reflect the full
+  // architecture (Bytecode Generator, PVM, Optimizer), not just the
+  // Tree-Walking Interpreter — and every one of these values must come from
+  // an actual, live check (package.json, process.version/platform/arch, the
+  // real DEFAULT_PASSES list), never a frozen literal that could go stale.
+  test('pari --version reflects the full architecture — frontend, both backends, PVM, and the Optimizer', () => {
+    const { stdout } = pari(['--version']);
+    assert.match(stdout, /Language\s+Parithi v1\.0/);
+    assert.match(stdout, /Frontend\s+Lexer.*Parser.*AST.*Semantic Analyzer/);
+    assert.match(stdout, /Backends\s+Tree-Walking Interpreter \| Bytecode Generator/);
+    assert.match(stdout, /Runtime\s+Parithi Virtual Machine \(PVM\)/);
+    assert.match(stdout, /Optimizer\s+Bytecode Optimizer \(\d+ Passes\)/);
+    assert.match(stdout, /Bytecode\s+Supported \(\.pbc\)/);
+    assert.match(stdout, /CLI\s+pari/);
+  });
+
+  test('pari --version\'s pass count matches the Optimizer\'s own DEFAULT_PASSES list', () => {
+    const { stdout } = pari(['--version']);
+    const match = stdout.match(/Optimizer\s+Bytecode Optimizer \((\d+) Passes\)/);
+    assert.ok(match, 'expected an "Optimizer" line with a pass count');
+    assert.equal(Number(match[1]), DEFAULT_PASSES.length);
+  });
+
+  test('pari --version\'s compiler version matches package.json exactly (never hardcoded)', () => {
+    const { stdout } = pari(['--version']);
+    const match = stdout.match(/Compiler\s+(\d+\.\d+\.\d+)/);
+    assert.ok(match, 'expected a "Compiler" line with a semver');
+    assert.equal(match[1], packageJson.version);
+  });
+
+  test('pari --version\'s Node.js/Platform lines match the live process, not a frozen literal', () => {
+    const { stdout } = pari(['--version']);
+    assert.match(stdout, new RegExp(`Node\\.js\\s+${process.version.replace(/\./g, '\\.')}`));
+    assert.match(stdout, new RegExp(`Platform\\s+${process.platform} \\(${process.arch}\\)`));
   });
 });
 
@@ -459,5 +497,331 @@ describe('CLI — Arrays (§Arrays)', () => {
       assert.equal(status, ExitCode.COMPILER_ERROR);
       assert.match(stderr, /P026/);
     });
+  });
+});
+
+describe('CLI — Bytecode Generator (§29)', () => {
+  function withTempFile(source, run) {
+    const dir = mkdtempSync(join(tmpdir(), 'parithi-cli-bytecode-'));
+    const file = join(dir, 'program.pr');
+    writeFileSync(file, source);
+    try {
+      run(file, dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  for (const name of ['hello', 'variables', 'functions', 'loops', 'ifelse', 'fizzbuzz', 'while-break-continue', 'arrays']) {
+    test(`pari --bytecode ${name}.pr exits 0 and prints a listing`, () => {
+      const { status, stdout, stderr } = pari(['--bytecode', join(EXAMPLES, `${name}.pr`)]);
+      assert.equal(status, ExitCode.SUCCESS);
+      assert.equal(stderr, '');
+      assert.match(stdout, /Bytecode for/);
+      assert.match(stdout, /Instructions \(\d+\)/);
+      assert.match(stdout, /HALT/);
+      assertNoRawStackTrace(stdout);
+    });
+  }
+
+  test('--bytecode does not execute the program (no program output, only the listing)', () => {
+    // "Hello, Parithi!" legitimately appears QUOTED inside the constant-pool
+    // listing (it's the string literal being compiled) — what must NOT
+    // appear is the program's actual `say` output, a bare unquoted line.
+    const { stdout } = pari(['--bytecode', join(EXAMPLES, 'hello.pr')]);
+    assert.doesNotMatch(stdout, /^Hello, Parithi!$/m);
+  });
+
+  test('--bytecode on a program with a compiler error reports it and exits 1, never reaching bytecode generation', () => {
+    withTempFile('hold x = @\n', (file) => {
+      const { status, stderr } = pari(['--bytecode', file]);
+      assert.equal(status, ExitCode.COMPILER_ERROR);
+      assert.match(stderr, /P008/);
+    });
+  });
+
+  test('--bytecode on a program with a semantic error reports it and exits 1', () => {
+    withTempFile('say undeclaredVar\n', (file) => {
+      const { status, stderr } = pari(['--bytecode', file]);
+      assert.equal(status, ExitCode.COMPILER_ERROR);
+      assert.match(stderr, /P001/);
+    });
+  });
+
+  test('--compile writes a .pbc file next to the source, starting with the PBC1 magic', () => {
+    withTempFile('hold x = 5\nsay x\n', (file, dir) => {
+      const { status, stdout, stderr } = pari(['--compile', file]);
+      assert.equal(status, ExitCode.SUCCESS);
+      assert.equal(stderr, '');
+      assert.match(stdout, /Compiled/);
+
+      const pbcPath = join(dir, 'program.pbc');
+      assert.equal(existsSync(pbcPath), true);
+      const bytes = readFileSync(pbcPath);
+      assert.equal(bytes.subarray(0, 4).toString('ascii'), 'PBC1');
+    });
+  });
+
+  test('--compile on every example program succeeds and produces a non-empty .pbc file', () => {
+    for (const name of ['hello', 'variables', 'functions', 'loops', 'ifelse', 'fizzbuzz', 'grade-checker', 'calculator', 'while-break-continue', 'stop', 'arrays']) {
+      const dir = mkdtempSync(join(tmpdir(), 'parithi-cli-compile-'));
+      try {
+        const source = readFileSync(join(EXAMPLES, `${name}.pr`), 'utf-8');
+        const file = join(dir, `${name}.pr`);
+        writeFileSync(file, source);
+        const { status, stderr } = pari(['--compile', file]);
+        assert.equal(status, ExitCode.SUCCESS, `${name}.pr: ${stderr}`);
+        const pbcPath = join(dir, `${name}.pbc`);
+        assert.equal(existsSync(pbcPath), true);
+        assert.ok(readFileSync(pbcPath).length > 0);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test('--compile does not execute the program', () => {
+    withTempFile('say "should not print"\n', (file) => {
+      const { stdout } = pari(['--compile', file]);
+      assert.doesNotMatch(stdout, /should not print/);
+    });
+  });
+
+  test('the normal (non-bytecode) run path is completely unaffected — same output, same exit code', () => {
+    const { status, stdout } = pari([join(EXAMPLES, 'hello.pr')]);
+    assert.equal(status, ExitCode.SUCCESS);
+    assert.equal(stdout, 'Hello, Parithi!\n');
+  });
+});
+
+describe('CLI — Parithi Virtual Machine (§30)', () => {
+  function withTempFile(source, run) {
+    const dir = mkdtempSync(join(tmpdir(), 'parithi-cli-pvm-'));
+    const file = join(dir, 'program.pr');
+    writeFileSync(file, source);
+    try {
+      run(file, dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test('pari file.pbc (bare, auto-detected) executes on the PVM with the same output as pari file.pr', () => {
+    withTempFile('say "Hello from the PVM"\n', (file, dir) => {
+      const compileResult = pari(['--compile', file]);
+      assert.equal(compileResult.status, ExitCode.SUCCESS);
+
+      const pbcPath = join(dir, 'program.pbc');
+      const { status, stdout, stderr } = pari([pbcPath]);
+      assert.equal(status, ExitCode.SUCCESS);
+      assert.equal(stderr, '');
+      assert.equal(stdout, 'Hello from the PVM\n');
+    });
+  });
+
+  test('--run-bytecode on a .pbc file produces the same output as the plain .pr run', () => {
+    withTempFile('hold x = 5\nhold y = 10\nsay x + y\n', (file, dir) => {
+      pari(['--compile', file]);
+      const pbcPath = join(dir, 'program.pbc');
+      const viaVM = pari(['--run-bytecode', pbcPath]);
+      const viaInterpreter = pari([file]);
+      assert.equal(viaVM.status, ExitCode.SUCCESS);
+      assert.equal(viaVM.stdout, viaInterpreter.stdout);
+    });
+  });
+
+  test('--run-bytecode on a .pr file compiles in memory and runs on the PVM directly (no .pbc file written)', () => {
+    withTempFile('say "direct from source"\n', (file, dir) => {
+      const { status, stdout } = pari(['--run-bytecode', file]);
+      assert.equal(status, ExitCode.SUCCESS);
+      assert.equal(stdout, 'direct from source\n');
+      assert.equal(existsSync(join(dir, 'program.pbc')), false);
+    });
+  });
+
+  test('every real example runs identically through the PVM (.pbc) and the Interpreter (.pr)', () => {
+    for (const name of ['hello', 'variables', 'functions', 'loops', 'ifelse', 'fizzbuzz', 'while-break-continue', 'arrays']) {
+      const dir = mkdtempSync(join(tmpdir(), 'parithi-cli-pvm-examples-'));
+      try {
+        const source = readFileSync(join(EXAMPLES, `${name}.pr`), 'utf-8');
+        const file = join(dir, `${name}.pr`);
+        writeFileSync(file, source);
+        pari(['--compile', file]);
+        const viaVM = pari([join(dir, `${name}.pbc`)]);
+        const viaInterpreter = pari([file]);
+        assert.equal(viaVM.status, viaInterpreter.status, `${name}: exit code mismatch`);
+        assert.equal(viaVM.stdout, viaInterpreter.stdout, `${name}: stdout mismatch`);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test('"stop <n>" produces the same exit code through the PVM as through the Interpreter', () => {
+    withTempFile('say "before"\nstop 5\nsay "after"\n', (file, dir) => {
+      pari(['--compile', file]);
+      const { status, stdout } = pari([join(dir, 'program.pbc')]);
+      assert.equal(status, 5);
+      assert.equal(stdout, 'before\n');
+    });
+  });
+
+  test('a runtime error through the PVM exits 2 with clean Parithi diagnostic formatting, no raw stack trace', () => {
+    withTempFile('say 1 / 0\n', (file, dir) => {
+      pari(['--compile', file]);
+      const { status, stdout, stderr } = pari([join(dir, 'program.pbc')]);
+      assert.equal(status, ExitCode.RUNTIME_ERROR);
+      assert.match(stderr, /P020/);
+      assertNoRawStackTrace(stdout + stderr);
+    });
+  });
+
+  test('a missing .pbc file is a clean usage error (exit 3), not a crash', () => {
+    const { status, stderr } = pari(['nonexistent-file.pbc']);
+    assert.equal(status, ExitCode.USAGE_ERROR);
+    assert.match(stderr, /not found/);
+  });
+
+  test('a corrupted .pbc file (bad magic bytes) is a clean usage error (exit 3)', () => {
+    withTempFile('say "irrelevant"\n', (file, dir) => {
+      const pbcPath = join(dir, 'corrupted.pbc');
+      writeFileSync(pbcPath, 'this is not a real .pbc file');
+      const { status, stderr } = pari([pbcPath]);
+      assert.equal(status, ExitCode.USAGE_ERROR);
+      assert.match(stderr, /not a valid Parithi Bytecode file/);
+    });
+  });
+
+  test('a directory named *.pbc is a clean usage error (exit 3), not a crash trying to read it as a file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'parithi-cli-pvm-dir-'));
+    try {
+      const fakePbcDir = join(dir, 'looks-like.pbc');
+      mkdirSync(fakePbcDir);
+      const { status, stderr } = pari([fakePbcDir]);
+      assert.equal(status, ExitCode.USAGE_ERROR);
+      assert.match(stderr, /directory/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a non-.pbc, non-.pr file passed to --run-bytecode is a clean usage error (exit 3)', () => {
+    withTempFile('irrelevant', (file, dir) => {
+      const txtPath = join(dir, 'notes.txt');
+      writeFileSync(txtPath, 'just text');
+      const { status, stderr } = pari(['--run-bytecode', txtPath]);
+      assert.equal(status, ExitCode.USAGE_ERROR);
+      assertNoRawStackTrace(stderr);
+    });
+  });
+});
+
+describe('CLI — Bytecode Optimizer (§31)', () => {
+  function withTempFile(source, run) {
+    const dir = mkdtempSync(join(tmpdir(), 'parithi-cli-optimizer-'));
+    const file = join(dir, 'program.pr');
+    writeFileSync(file, source);
+    try {
+      run(file, dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test('"pari <file.pr> --optimize" (trailing form) displays the optimized listing without executing', () => {
+    withTempFile('const PI = 3.14\nhold area = PI * 10\nsay area\n', (file) => {
+      const { status, stdout, stderr } = pari([file, '--optimize']);
+      assert.equal(status, ExitCode.SUCCESS);
+      assert.equal(stderr, '');
+      assert.match(stdout, /Optimized Bytecode for/);
+      assert.doesNotMatch(stdout, /^31\.4/m); // never actually ran the program
+    });
+  });
+
+  test('"pari --optimize <file.pr>" (leading form) produces the identical listing as the trailing form', () => {
+    withTempFile('say 2 + 3\n', (file) => {
+      const trailing = pari([file, '--optimize']);
+      const leading = pari(['--optimize', file]);
+      assert.equal(trailing.stdout, leading.stdout);
+    });
+  });
+
+  test('"pari <file.pr> --disassemble" is the same display as "--optimize"', () => {
+    withTempFile('say 2 + 3\n', (file) => {
+      const viaOptimize = pari([file, '--optimize']);
+      const viaDisassemble = pari([file, '--disassemble']);
+      assert.equal(viaOptimize.stdout, viaDisassemble.stdout);
+    });
+  });
+
+  test('"pari <file.pr> --stats" prints the Pass 9 optimization report', () => {
+    withTempFile('const PI = 3.14\nhold area = PI * 10\nsay area\n', (file) => {
+      const { status, stdout } = pari([file, '--stats']);
+      assert.equal(status, ExitCode.SUCCESS);
+      assert.match(stdout, /Optimization Report for/);
+      assert.match(stdout, /Instructions Before/);
+      assert.match(stdout, /Optimization Ratio/);
+      assert.match(stdout, /Per-Pass Breakdown/);
+    });
+  });
+
+  test('plain "pari <file.pr>" (no --optimize) is completely unaffected — still executes normally', () => {
+    withTempFile('say "unaffected"\n', (file) => {
+      const { status, stdout } = pari([file]);
+      assert.equal(status, ExitCode.SUCCESS);
+      assert.equal(stdout, 'unaffected\n');
+    });
+  });
+
+  test('"pari --compile <file.pr> --optimize" writes a smaller .pbc that still runs to the same output', () => {
+    withTempFile('const PI = 3.14\nhold area = PI * 10\nsay area\n', (file, dir) => {
+      const unoptimized = pari(['--compile', file]);
+      assert.equal(unoptimized.status, ExitCode.SUCCESS);
+      const unoptimizedSize = readFileSync(join(dir, 'program.pbc')).length;
+
+      const optimized = pari(['--compile', file, '--optimize']);
+      assert.equal(optimized.status, ExitCode.SUCCESS);
+      assert.match(optimized.stdout, /optimized:/);
+      const optimizedSize = readFileSync(join(dir, 'program.pbc')).length;
+      assert.ok(optimizedSize < unoptimizedSize, `expected optimized .pbc (${optimizedSize}B) to be smaller than unoptimized (${unoptimizedSize}B)`);
+
+      const { status, stdout } = pari([join(dir, 'program.pbc')]);
+      assert.equal(status, ExitCode.SUCCESS);
+      assert.equal(stdout, '31.400000000000002\n');
+    });
+  });
+
+  test('"pari --run-bytecode <file.pr> --optimize" executes the optimized bytecode on the PVM directly', () => {
+    withTempFile('const PI = 3.14\nhold area = PI * 10\nsay area\n', (file) => {
+      const { status, stdout } = pari(['--run-bytecode', file, '--optimize']);
+      assert.equal(status, ExitCode.SUCCESS);
+      assert.equal(stdout, '31.400000000000002\n');
+    });
+  });
+
+  test('a runtime error from optimized bytecode still reports the correct error code, no raw stack trace', () => {
+    withTempFile('say 1 / 0\n', (file) => {
+      const { status, stdout, stderr } = pari(['--run-bytecode', file, '--optimize']);
+      assert.equal(status, ExitCode.RUNTIME_ERROR);
+      assert.match(stderr, /P020/);
+      assertNoRawStackTrace(stdout + stderr);
+    });
+  });
+
+  test('every real example still runs identically through optimized bytecode as through the plain Interpreter', () => {
+    for (const name of ['hello', 'variables', 'functions', 'loops', 'ifelse', 'fizzbuzz', 'while-break-continue', 'arrays']) {
+      const source = readFileSync(join(EXAMPLES, `${name}.pr`), 'utf-8');
+      const dir = mkdtempSync(join(tmpdir(), 'parithi-cli-optimizer-examples-'));
+      try {
+        const file = join(dir, `${name}.pr`);
+        writeFileSync(file, source);
+        const viaOptimizedVM = pari(['--run-bytecode', file, '--optimize']);
+        const viaInterpreter = pari([file]);
+        assert.equal(viaOptimizedVM.status, viaInterpreter.status, `${name}: exit code mismatch`);
+        assert.equal(viaOptimizedVM.stdout, viaInterpreter.stdout, `${name}: stdout mismatch`);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
   });
 });

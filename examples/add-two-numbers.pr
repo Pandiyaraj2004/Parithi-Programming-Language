@@ -1,0 +1,4 @@
+hold a=number(ask("enter number a:"))
+hold b=number(ask("enter number b:"))
+hold c=a+b
+say "sum:",c

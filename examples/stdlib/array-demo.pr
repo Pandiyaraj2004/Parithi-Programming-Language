@@ -1,0 +1,16 @@
+# Standard Library — Array (MASTER_DOCUMENT.md §32.3)
+# The Phase 13 additions — clear(), length(), isEmpty() — plus indexOf(),
+# which is new but shares its name with the String library's version
+# (§32.2). push()/pop()/sort()/reverse()/contains() are Phase 9 and already
+# shown in examples/arrays.pr.
+
+hold fruits = box("apple", "banana", "cherry")
+say "Array:", fruits
+say "length():", length(fruits)
+say "isEmpty():", isEmpty(fruits)
+say "indexOf('banana'):", indexOf(fruits, "banana")
+say "indexOf('kiwi'):", indexOf(fruits, "kiwi")
+
+clear(fruits)
+say "After clear():", fruits
+say "isEmpty() after clear():", isEmpty(fruits)

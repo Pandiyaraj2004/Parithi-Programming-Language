@@ -1,0 +1,9 @@
+# Native backend (Phase 13) — multiple "say" statements, multi-value say,
+# and a variety of string content (punctuation, numbers-as-text, spaces).
+
+say "Line one"
+say "Line two", "with multiple", "values"
+say "Numbers as text: 12345"
+say "Punctuation: !?.,;:'"
+say ""
+say "Line after an empty line"

@@ -9,12 +9,17 @@ documentation-only correction.
 
 **Verdict: Parithi v1.0 is stable and ready for public release.**
 
-**Note (added post-Phase 9):** the counts below (361 tests, 47 source files,
-etc.) are a point-in-time snapshot of Phase 8.5 specifically, preserved
-unedited. Phase 9 added Arrays on top of this verified baseline — see
+**Note (added post-Phase 9, still accurate through Phase 12):** the counts
+below (361 tests, 47 source files, etc.) are a point-in-time snapshot of
+Phase 8.5 specifically, preserved unedited. Phases 9–12 added Arrays, a
+Bytecode Generator, a Parithi Virtual Machine, and a Bytecode Optimizer on
+top of this verified baseline (695 tests as of Phase 12, including a fix
+to a genuine Phase 10 binary-format bug found during Phase 11's own
+validation, and a dedicated 54-test suite proving the Interpreter and the
+optimized PVM stay output-identical) — see
 [CHANGELOG.md](../CHANGELOG.md) and
-[MASTER_DOCUMENT.md §28](MASTER_DOCUMENT.md#28-arrays-phase-9) for current
-counts and status.
+[MASTER_DOCUMENT.md §28](MASTER_DOCUMENT.md#28-arrays-phase-9)/[§29](MASTER_DOCUMENT.md#29-bytecode-phase-10)/[§30](MASTER_DOCUMENT.md#30-parithi-virtual-machine-phase-11)/[§31](MASTER_DOCUMENT.md#31-bytecode-optimizer-phase-12)
+for current counts and status.
 
 ---
 

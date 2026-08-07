@@ -1,0 +1,55 @@
+{
+  "name": "vscode-parithi",
+  "displayName": "Parithi Language Support",
+  "description": "Syntax highlighting, language configuration, and a custom file icon for the Parithi programming language (.pr).",
+  "version": "0.1.0",
+  "publisher": "parithi-lang",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "parithi",
+    "language",
+    "syntax",
+    "highlighting",
+    "icon"
+  ],
+  "icon": "images/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/parithi-lang/parithi"
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "parithi",
+        "aliases": [
+          "Parithi",
+          "parithi"
+        ],
+        "extensions": [
+          ".pr"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "parithi",
+        "scopeName": "source.parithi",
+        "path": "./syntaxes/parithi.tmLanguage.json"
+      }
+    ],
+    "iconThemes": [
+      {
+        "id": "parithi-icons",
+        "label": "Parithi Icons",
+        "path": "./icons/parithi-icon-theme.json"
+      }
+    ]
+  }
+}

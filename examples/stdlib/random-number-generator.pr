@@ -1,0 +1,11 @@
+# Standard Library — Math (MASTER_DOCUMENT.md §32.1)
+# randomInt() — a random whole number in an inclusive range.
+
+say "Rolling a six-sided die 5 times:"
+repeat 5 as i
+    say randomInt(1, 6)
+end repeat
+
+hold low = 10
+hold high = 20
+say "A random number between", low, "and", high, ":", randomInt(low, high)

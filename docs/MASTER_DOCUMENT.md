@@ -5,9 +5,9 @@
 **Project Name:** Parithi
 **Tagline:** A Human-Friendly Programming Language Designed for Readability and Simplicity
 **Target Runtime:** Node.js (JavaScript)
-**Status:** v1.0 — stable release, now including Arrays. Implementation complete and fully verified against this specification (see `docs/PHASE8_AUDIT_REPORT.md`), followed by a Phase 8.5 release-readiness pass (packaging/documentation only — see `CHANGELOG.md`) and a Phase 9 language addition (`box` arrays, [§28](#28-arrays-phase-9) — the first language-surface change since the Phase 8 audit).
+**Status:** v1.0 — stable release, now including Arrays, a Bytecode Generator, a Parithi Virtual Machine, a Bytecode Optimizer, (partially) a Standard Library, and (as a genuine but minimal foundation) a Native Compiler. Implementation complete and fully verified against this specification (see `docs/PHASE8_AUDIT_REPORT.md`), followed by a Phase 8.5 release-readiness pass (packaging/documentation only — see `CHANGELOG.md`), a Phase 9 language addition (`box` arrays, [§28](#28-arrays-phase-9) — the first language-surface change since the Phase 8 audit), a Phase 10 new backend ([§29](#29-bytecode-phase-10) — AST → Parithi Bytecode `.pbc`), a Phase 11 second execution engine ([§30](#30-parithi-virtual-machine-phase-11) — the PVM executes that bytecode directly; the Tree-Walking Interpreter is untouched and remains the default), a Phase 12 optimization pipeline ([§31](#31-bytecode-optimizer-phase-12) — an additive post-processing stage between the Generator and the Validator/PVM that shrinks a program's bytecode without changing what it does), a Phase 13 Standard Library ([§32](#32-standard-library-phase-13) — in progress; sub-phase 13a shipped: Math/String/Array/Type/System, ~45 new built-ins, all additive; File/JSON/DateTime/HTTP remain in later sub-phases), and a Phase 13 Native Compiler ([§33](#33-native-compiler-phase-13-x86-64-backend) — a **third** execution backend, AST → hand-written x86-64 machine code → a real, standalone Windows PE `.exe`; today compiles only `say` with String literals, proven by actually executing generated `.exe` files — see §33.9 for the honest supported/unsupported boundary). All backends are proven — not just asserted — to produce identical output for identical programs (§30.11, §31.10, §32.12, §33.8).
 **Document Owner:** Language Architecture Team
-**Last Updated:** 2026-08-06
+**Last Updated:** 2026-08-07
 
 ---
 
@@ -42,13 +42,16 @@ Sections are ordered roughly the way you'd build the project: philosophy and rul
 19. [CLI Commands](#19-cli-commands)
 20. [Example Programs](#20-example-programs)
 21. [Technology Stack](#21-technology-stack)
-22. [Development Phases (Phase 0–9)](#22-development-phases-phase-09)
+22. [Development Phases (Phase 0–10)](#22-development-phases-phase-010)
 23. [Future Roadmap](#23-future-roadmap)
 24. [Testing Strategy](#24-testing-strategy)
 25. [Project Directory Structure Reference](#25-project-directory-structure-reference)
 26. [Future Enhancements](#26-future-enhancements)
 27. [Conclusion](#27-conclusion)
 28. [Arrays (Phase 9)](#28-arrays-phase-9)
+29. [Bytecode (Phase 10)](#29-bytecode-phase-10)
+30. [Parithi Virtual Machine (Phase 11)](#30-parithi-virtual-machine-phase-11)
+31. [Bytecode Optimizer (Phase 12)](#31-bytecode-optimizer-phase-12)
 
 ---
 
@@ -62,9 +65,9 @@ Parithi v1.0 is a **tree-walking interpreter** implemented in JavaScript/Node.js
 Source (.pr) → Lexer → Parser → AST → Semantic Analyzer → Interpreter → Runtime → Output
 ```
 
-There is no bytecode or virtual machine in v1.0 — programs are parsed into an AST and executed directly by walking that tree. This keeps the v1.0 implementation small, debuggable, and fast to build, while the architecture is deliberately modular so a bytecode compiler and VM (Parithi Bytecode `.pbc` + Parithi Virtual Machine, "PVM") can be added later **without changing the language surface**.
+The Tree-Walking Interpreter still parses a program into an AST and *executes* it directly by walking that tree — it never involves bytecode, and it remains the default (`pari <file.pr>`). This kept the v1.0 implementation small, debuggable, and fast to build, while the architecture was deliberately modular so a bytecode compiler and VM could be added later without changing the language surface — a bet that has since fully paid off: a **Bytecode Generator** (Phase 10) compiles the same validated AST to Parithi Bytecode (`.pbc`, via `--bytecode`/`--compile`), and a **Parithi Virtual Machine** (Phase 11, "PVM") executes it directly (`pari <file.pbc>`/`--run-bytecode`) — both wholly separate, additive backends that changed zero lines in the Lexer, Parser, AST, Semantic Analyzer, or Interpreter (§29, §30). The two backends are proven, not just asserted, to produce identical output for identical programs (§30.11); `pari <file.pr>` is still the Interpreter, unconditionally, until a future decision (§23 item 2) changes the default.
 
-Parithi ships as a Node.js CLI (`pari`) that runs `.pr` source files directly, with debug flags to inspect the token stream and AST.
+Parithi ships as a Node.js CLI (`pari`) that runs `.pr` source files directly, with debug flags to inspect the token stream, AST, and (as of Phase 10) the generated bytecode.
 
 ---
 
@@ -161,6 +164,9 @@ Parithi's problem statement: **there is no small, block-scoped, statically-infer
 - Variables (`hold`) and constants (`const`)
 - Six built-in data types: Number, Decimal, String, Boolean, Empty, Array
 - Arrays (`box`), with indexing, mutation, and a small standard set of operations — see [§28](#28-arrays-phase-9)
+- A Bytecode Generator (AST → Parithi Bytecode `.pbc`), alongside the Tree-Walking Interpreter — see [§29](#29-bytecode-phase-10)
+- A Parithi Virtual Machine (PVM) that executes that bytecode directly, as a second, independent execution engine — see [§30](#30-parithi-virtual-machine-phase-11)
+- A Bytecode Optimizer — 8 passes (constant folding/propagation, dead-code/jump/peephole/stack/constant-pool optimization, and a final jump-target repair) running between the Generator and the Validator/PVM, reached via `--optimize`/`--stats`/`--disassemble` or combined with `--compile`/`--run-bytecode` — see [§31](#31-bytecode-optimizer-phase-12)
 - Arithmetic operators, including exponentiation (`**`)
 - Symbolic **and** readable-word comparison operators
 - Logical operators as words only (`and`, `or`, `not`)
@@ -253,15 +259,35 @@ Abstract Syntax Tree → in-memory structural representation of the whole progra
    ▼
 Semantic Analyzer    → static checks: scope, types, keyword misuse, block integrity
    │
-   ▼
-Tree-Walking Interpreter → executes the validated AST directly, node by node
-   │
-   ▼
-Runtime              → holds live state (variables, call stack) while executing
-   │
-   ▼
-Output                → say/ask interact with stdout/stdin
+   ├──────────────────────────────────┐
+   ▼                                  ▼
+Tree-Walking Interpreter          Bytecode Generator (Phase 10, §29)
+   │  executes the validated AST      │  translates the SAME validated AST
+   │  directly, node by node          │  into Parithi Bytecode (.pbc)
+   ▼                                  ▼
+Runtime                           Bytecode Optimizer (Phase 12, §31, optional)
+   │  holds live state (variables,       │  8 passes, only when --optimize is
+   │  call stack) while executing         │  requested; shrinks the SAME
+   ▼                                       │  program without changing behavior
+   │                                       ▼
+   │                                  Parithi Bytecode (.pbc)
+   │                                       │
+   │                                       ▼
+   │                                  Parithi Virtual Machine (PVM, Phase 11, §30)
+   └───────────────┬───────────────────────┘
+                    ▼
+Output → say/ask interact with stdout/stdin
 ```
+
+Both backends consume the identical output of the Semantic Analyzer —
+neither one changes what "a valid Parithi program" means. `pari <file.pr>`
+(no flag) always takes the left (Interpreter) path; `pari <file.pbc>` /
+`--run-bytecode` takes the right one — Bytecode Generator, optionally the
+Optimizer (Phase 12, only with `--optimize`), then the PVM actually
+executing it (Phase 11; `--bytecode`/`--compile` still just generate a
+listing/file without executing, exactly as Phase 10 left them). All three
+paths (Interpreter, unoptimized PVM, optimized PVM) are proven to produce
+identical output — see §30.11, §31.10.
 
 ### 9.1 Lexer
 
@@ -290,11 +316,23 @@ Walks the AST once, before any execution, maintaining a stack of symbol tables (
 
 ### 9.5 Tree-Walking Interpreter
 
-Executes the annotated AST directly via a `evaluate(node, environment)` dispatch over node type. No intermediate bytecode exists in v1.0 — this is the defining trait of a tree-walking interpreter, and the reason a future PVM will be a separate, additive backend rather than a modification of this one.
+Executes the annotated AST directly via a `evaluate(node, environment)` dispatch over node type — no bytecode is involved in this path, and none ever has been; this remains the default, primary way every Parithi program actually runs (`pari <file.pr>`, no flag). This is the defining trait of a tree-walking interpreter, and precisely why the Phase 10 Bytecode Generator (§9.7) could be added as a wholly separate, additive backend rather than a modification of this one — it consumes the same AST but was built without touching a single line here.
 
 ### 9.6 Runtime Environment
 
 See [§17](#17-runtime-architecture) for full detail on scope chaining, the call stack, and the built-in registry.
+
+### 9.7 Bytecode Generator (Phase 10)
+
+An alternative backend, reached only via `--bytecode`/`--compile`, that translates the same validated AST into Parithi Bytecode instead of executing it. Full detail — instruction set, calling convention, file formats — is in [§29](#29-bytecode-phase-10).
+
+### 9.8 Parithi Virtual Machine (Phase 11)
+
+Executes the bytecode §9.7 generates — reached via `pari <file.pbc>` or `--run-bytecode` — as a second, independent execution engine alongside §9.5's Interpreter. Never walks the AST; operates purely on the flat instruction list. Full detail — memory model, opcode execution reference, error handling — is in [§30](#30-parithi-virtual-machine-phase-11).
+
+### 9.9 Bytecode Optimizer (Phase 12)
+
+An optional post-processing stage between §9.7's Generator and §9.8's PVM, reached via `--optimize`/`--stats`/`--disassemble`, or combined with `--compile`/`--run-bytecode`/`--bytecode`. Takes the exact same program shape the Generator produces and returns a smaller (or identical, if nothing was foldable) one computing the identical result — never invoked unless explicitly requested, so plain `pari <file.pr>`/`pari <file.pbc>` are completely unaffected by this phase's existence. Full detail — the 8 passes, the validation guarantee, CLI integration — is in [§31](#31-bytecode-optimizer-phase-12).
 
 ---
 
@@ -354,14 +392,54 @@ parithi/
 │   │   ├── logger.js            # error output (the only method any call site actually uses — trimmed Phase 8.5)
 │   │   ├── colors.js            # zero-dependency ANSI colors
 │   │   └── messages.js          # formats CompilerError/ParithiRuntimeError for terminal
-│   └── cli/                     # Phase 7 — professional CLI
-│       ├── args.js              # argv → { mode, file, verbose } — throws CliUsageError on bad input
-│       ├── commands.js          # dispatch: run / --tokens / --ast / --analyze / --runtime / --version / --help
-│       ├── cli-error.js         # CliUsageError — bad flag/file, distinct from CompilerError/ParithiRuntimeError
-│       ├── exit-codes.js        # ExitCode — the 0/1/2/3 table (§19.1)
-│       ├── version-info.js      # language/compiler/Node/build-date/platform, read from package.json
-│       ├── suggestions.js       # Levenshtein "did you mean" for flags and filenames (§19.2)
-│       └── screens.js           # buildHelpText()/buildVersionText() — pure, testable display strings
+│   ├── cli/                     # Phase 7 — professional CLI
+│   │   ├── args.js              # argv → { mode, file, verbose } — throws CliUsageError on bad input
+│   │   ├── commands.js          # dispatch: run / --tokens / --ast / --analyze / --runtime / --bytecode / --compile / --version / --help
+│   │   ├── cli-error.js         # CliUsageError — bad flag/file, distinct from CompilerError/ParithiRuntimeError
+│   │   ├── exit-codes.js        # ExitCode — the 0/1/2/3 table (§19.1)
+│   │   ├── version-info.js      # language/compiler/Node/build-date/platform, read from package.json
+│   │   ├── suggestions.js       # Levenshtein "did you mean" for flags and filenames (§19.2)
+│   │   └── screens.js           # buildHelpText()/buildVersionText() — pure, testable display strings
+│   ├── bytecode/                # Phase 10 — AST → Parithi Bytecode (.pbc), §29
+│   │   ├── opcode.js            # Opcode enum, OPCODE_INFO (arity + stack effect), OPCODE_LIST/OPCODE_ID (binary format)
+│   │   ├── instruction.js       # Instruction — {opcode, operands, line, column}
+│   │   ├── constant-pool.js     # ConstantPool — deduplicated (type, value) table
+│   │   ├── label.js             # Label — symbolic jump target, resolved to a concrete index once
+│   │   ├── bytecode-builder.js  # BytecodeBuilder — instruction list + constant pool + labels + function table + resolve()
+│   │   ├── bytecode-generator.js # BytecodeGenerator — AST walk -> instructions; compile-time slot mangling (§29.2)
+│   │   ├── validator.js         # validateBytecode() — constant/jump/argCount/stack-balance checks (§29.6)
+│   │   ├── bytecode-writer.js   # formatBytecodeText(), writeBytecodeBinary()/readBytecodeBinary() — .pbc format (§29.7)
+│   │   └── index.js             # barrel export
+│   ├── vm/                      # Phase 11 — executes Parithi Bytecode, §30
+│   │   ├── virtual-machine.js   # VirtualMachine — the dispatch loop + top-level state (§30.1)
+│   │   ├── instruction-dispatcher.js # one handler per opcode (§30.5)
+│   │   ├── frame.js             # Frame — locals + lexicalParent/callerFrame split (§30.3)
+│   │   ├── stack.js             # OperandStack — the shared operand stack (§30.4)
+│   │   ├── heap.js              # Heap — allocation bookkeeping for arrays (§30.4)
+│   │   ├── memory.js            # Memory — owns the global Frame + Heap (§30.4)
+│   │   ├── loader.js            # loadFromFile() (.pbc) / compileFromSource() (.pr, in memory) (§30.7)
+│   │   ├── builtins.js          # thin re-export of interpreter/builtins/index.js (§30.2)
+│   │   ├── runtime-values.js    # thin re-export of runtime/runtime-value.js + stringify.js (§30.2)
+│   │   ├── vm-errors.js         # every VM error, as a ParithiRuntimeError (§30.6)
+│   │   ├── debugger.js          # read-only introspection — future-ready (§30.10)
+│   │   └── index.js             # barrel export
+│   └── optimizer/                # Phase 12 — optional bytecode post-processing, §31
+│       ├── optimizer.js         # optimizeBytecode() — the entry point; sweeps Passes 1-8 to convergence (§31.9)
+│       ├── pass-manager.js      # PassManager — runs one ordered sweep, re-validating after every pass (§31.9)
+│       ├── optimizer-error.js   # OptimizerError — thrown, never silently swallowed, on invalid pass output
+│       ├── program-utils.js     # shared index-remapping helpers every deleting pass uses (§31.2)
+│       ├── statistics.js        # computeStatistics() — before/after/removed counts (§31.8, Pass 9)
+│       ├── optimizer-report.js  # formatOptimizerReport() — the `--stats` text (§31.8, Pass 9)
+│       ├── passes/
+│       │   ├── constant-folding.js            # Pass 1 (§31.3)
+│       │   ├── constant-propagation.js        # Pass 2 (§31.3)
+│       │   ├── dead-code-elimination.js       # Pass 3 (§31.3)
+│       │   ├── jump-optimization.js           # Pass 4 (§31.3)
+│       │   ├── peephole-optimization.js       # Pass 5 (§31.3)
+│       │   ├── stack-optimization.js          # Pass 6 (§31.3)
+│       │   ├── constant-pool-optimization.js  # Pass 7 (§31.3)
+│       │   └── label-cleanup.js               # Pass 8 (§31.3)
+│       └── index.js             # barrel export
 ├── examples/
 │   ├── hello.pr
 │   ├── variables.pr
@@ -383,7 +461,10 @@ parithi/
 │   ├── e2e.test.js              # Phase 5: runs the real examples/*.pr files through the full pipeline
 │   ├── error-messages.test.js   # Phase 5: every error class/stage carries code+message+location+hint
 │   ├── runtime.test.js          # Phase 6: RuntimeValue, EnvironmentStack, Runtime, ExecutionContext, BuiltinRegistry, leak-proofing, stress tests
-│   ├── cli.test.js              # Phase 7: spawns the real `pari` binary — exit codes, file handling, suggestions
+│   ├── cli.test.js              # Phase 7: spawns the real `pari` binary — exit codes, file handling, suggestions (+ Phase 10: --bytecode/--compile; + Phase 11: .pbc/--run-bytecode)
+│   ├── bytecode.test.js         # Phase 10: Generator, Validator, and text/binary writer round-trip fidelity
+│   ├── vm.test.js               # Phase 11: every opcode, runtime object, recursion, arrays, stack overflow, invalid/corrupted bytecode
+│   ├── vm-parity.test.js        # Phase 11: Interpreter vs. PVM — identical output/exit/error codes, every construct + all real examples
 │   └── fixtures/                # Phase 7: CLI test fixtures (e.g. a filename containing spaces)
 ├── docs/
 │   ├── MASTER_DOCUMENT.md          # this file
@@ -1301,6 +1382,10 @@ Two categories of mistake are distinguished from an ordinary Parithi program err
 
 Both are CLI Usage Errors (exit `3`) — see [§19.1](#191-exit-codes-phase-7). A directory passed where a file was expected, and a file that exists but does not end in `.pr`, are reported the same way, with a suggestion to point at a real `.pr` file inside the directory or rename the file respectively. Every one of these paths is caught and formatted before it could ever reach a raw Node.js file-system exception.
 
+### 19.3 `pari --version` Output
+
+Reports the full architecture, not just the frontend/Interpreter: `Language`, `Compiler` (from `package.json`), `Frontend` (`Lexer → Parser → AST → Semantic Analyzer`), `Backends` (`Tree-Walking Interpreter | Bytecode Generator`, §29), `Runtime` (the PVM, §30), `Optimizer` (`Bytecode Optimizer (N Passes)` — `N` read live from the Optimizer's own `DEFAULT_PASSES` list, §31.3, never hand-typed), `Bytecode` (`.pbc` support, §29.7), `CLI`, `Node.js` (`process.version`), `Build Date`, and `Platform` (`process.platform`/`process.arch`). `bytecodeSupport()`/`pvmSupport()`/`optimizerSupport()` (`src/cli/version-info.js`) each check that the relevant module's actual exports are present and callable, so this screen would honestly report a feature as unavailable rather than silently claim support for something not actually loaded.
+
 ---
 
 ## 20. Example Programs
@@ -1422,7 +1507,7 @@ Deliberately **no external parsing library** (no PEG.js/Nearley/ANTLR) is used f
 
 ---
 
-## 22. Development Phases (Phase 0–9)
+## 22. Development Phases (Phase 0–12)
 
 | Phase | Name | Scope | Exit Criteria |
 |---|---|---|---|
@@ -1444,7 +1529,13 @@ A final **Phase 8** milestone re-audited the entire specification end-to-end —
 
 **Phase 8.5 — Release Readiness** promoted that Release Candidate to the v1.0 stable release referenced in this document's current Status field. Scope was strictly packaging and documentation, not implementation: a repository-wide consistency review (reconciling stale doc references — e.g. a `tests/golden/` folder that had never actually been created — against the real file tree), removal of a leftover scratch file and two small dead-code paths (an unused registry re-export, unused logger methods) with zero behavioral change (`npm test` re-verified at 361/361 both before and after), a package version bump (`0.1.0` → `1.0.0`, retiring the "pre-release implementation" framing now that the language and compiler versions have converged), and the addition of standard open-source packaging files (`LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`). No keyword, grammar rule, built-in, error code, or CLI flag changed. Full verification results: `docs/RELEASE_VERIFICATION_REPORT.md`.
 
-**Phase 9 — Arrays** is the first genuine language-surface addition since the Phase 8 audit: the `box` keyword, `[...]` indexing/assignment, and seven new built-ins (`push`/`pop`/`insert`/`remove`/`sort`/`reverse`/`contains`), fully specified in [§28](#28-arrays-phase-9). This resolves the one open item `docs/ARRAYS_DESIGN.md` had been left waiting on since Phase 8 (§9's "what keyword should represent arrays?") and implements it end-to-end — Lexer through CLI/docs/tests — exactly as that design document's §8 "changes by layer" table anticipated, with three deliberate departures from its own recommendations (all made by explicit instruction, not inferred): 0-based indexing rather than 1-based, reference semantics rather than value semantics, and bracket indexing layered on top of keyword-call construction rather than picking only one literal style. Bytecode/PVM work remains untouched, per this phase's explicit scope boundary.
+**Phase 9 — Arrays** is the first genuine language-surface addition since the Phase 8 audit: the `box` keyword, `[...]` indexing/assignment, and seven new built-ins (`push`/`pop`/`insert`/`remove`/`sort`/`reverse`/`contains`), fully specified in [§28](#28-arrays-phase-9). This resolves the one open item `docs/ARRAYS_DESIGN.md` had been left waiting on since Phase 8 (§9's "what keyword should represent arrays?") and implements it end-to-end — Lexer through CLI/docs/tests — exactly as that design document's §8 "changes by layer" table anticipated, with three deliberate departures from its own recommendations (all made by explicit instruction, not inferred): 0-based indexing rather than 1-based, reference semantics rather than value semantics, and bracket indexing layered on top of keyword-call construction rather than picking only one literal style. Bytecode/PVM work remained untouched in this phase specifically, per its own explicit scope boundary — it followed immediately after, as Phase 10.
+
+**Phase 10 — Bytecode Generator** added the first alternative execution backend: AST → Parithi Bytecode (`.pbc`), fully specified in [§29](#29-bytecode-phase-10). Explicitly scoped to *generation only* — the Parithi Virtual Machine that would execute a `.pbc` file (§23 item 2) is not part of this phase, and remains future work. Zero lines changed in `src/lexer/`, `src/parser/`, `src/ast/`, `src/semantic/`, or `src/interpreter/` — the Tree-Walking Interpreter is byte-for-byte the same code that shipped in Phase 9, verified by the full pre-existing test suite passing unchanged (454/454, both before and after this phase) alongside 54 new bytecode-specific tests (508/508 total). The two new CLI flags (`--bytecode`, `--compile`) are purely additive; `pari <file.pr>` with no flag is unaffected.
+
+**Phase 11 — Parithi Virtual Machine** closed the gap Phase 10 deliberately left open: a real execution engine for the bytecode it generates, fully specified in [§30](#30-parithi-virtual-machine-phase-11). Zero lines changed in `src/lexer/`, `src/parser/`, `src/ast/`, `src/semantic/`, `src/interpreter/`, `src/runtime/`, or anywhere under `src/bytecode/` — every one of those, and Phase 10's Generator/Validator/constant-pool/binary-format specifically, are exactly as they were left. Reused rather than reimplemented wherever a single correct implementation already existed (array semantics, built-ins, deep equality, value rendering — §30.2), which is what turned "the PVM must behave exactly like the Interpreter" into a mechanically-checked fact rather than a hope: `tests/vm-parity.test.js` runs 39 programs through both backends and asserts identical output, exit codes, and error codes (§30.11). 632/632 tests pass (508 pre-Phase-11 + 123 new + 1 from a Phase 10 binary-format bugfix found by this phase's own validation — §29.7). `pari <file.pbc>` (auto-detected) and `pari --run-bytecode <file>` are purely additive; `pari <file.pr>` with no flag is unaffected.
+
+**Phase 12 — Bytecode Optimizer** added the final piece of the roadmap's original three-stage bytecode plan (§23 items 1–3): an optional post-processing stage between the Generator and the Validator/PVM, fully specified in [§31](#31-bytecode-optimizer-phase-12). Zero lines changed in `src/lexer/`, `src/parser/`, `src/ast/`, `src/semantic/`, `src/interpreter/`, `src/runtime/`, anywhere under `src/bytecode/`, or anywhere under `src/vm/` — every protected module from Phases 9–11 is exactly as it was left; only a new, additive `src/optimizer/` module and a handful of `src/cli/` lines (three new flags, composing with existing ones — §31.9) were added. 8 ordered passes (constant folding, constant propagation, dead-code/jump/peephole/stack/constant-pool optimization, and a final jump-target repair), re-validated by the unmodified Phase 10 Validator after every single pass, swept to convergence rather than run once (§31.9's worked example — one pass exposing an opportunity for an earlier one, resolved by re-sweeping the whole ordered sequence rather than reordering it). `tests/optimizer.test.js`'s 54 tests prove every pass's own claim independently, and its regression suite proves optimized-PVM output matches the unmodified Interpreter's — the identical parity method §30.11 established, now covering a third execution path. 695/695 tests pass (632 pre-Phase-12 + 54 new optimizer tests + 9 new CLI tests). `--optimize`/`--stats`/`--disassemble` are purely additive; `pari <file.pr>`/`pari <file.pbc>` with no such flag are unaffected.
 
 ---
 
@@ -1452,13 +1543,15 @@ A final **Phase 8** milestone re-audited the entire specification end-to-end —
 
 Ordered by planned sequence, each stage additive and non-breaking to existing `.pr` source:
 
-1. **Bytecode Generator** — compile the validated AST into Parithi Bytecode (`.pbc`), a flat, stack-oriented instruction set. The semantic analyzer output (annotated AST) becomes the compiler's input, so no front-end work is repeated.
-2. **Parithi Virtual Machine (PVM)** — a stack-based VM executing `.pbc` directly, replacing the tree-walking interpreter as the default execution backend for performance. The tree-walking interpreter remains available behind a `--interpret` flag for debugging/teaching parity.
-3. **Optimizer Pass** — constant folding, dead-code elimination, and peephole optimization operating on the bytecode between the generator and the VM.
+1. **Bytecode Generator** — ✅ **shipped in Phase 10** ([§29](#29-bytecode-phase-10)). Compiles the validated AST into Parithi Bytecode (`.pbc`), a flat, stack-oriented instruction set, reached via `--bytecode`/`--compile`. The semantic analyzer's output (the same validated AST the Interpreter uses) is the compiler's input, unmodified — no front-end work was repeated, exactly as planned here.
+2. **Parithi Virtual Machine (PVM)** — ✅ **shipped in Phase 11** ([§30](#30-parithi-virtual-machine-phase-11)). A stack-based VM executing the `.pbc` Phase 10 produces, reached via `pari <file.pbc>`/`--run-bytecode`. Still **not** the default for a bare `pari <file.pr>` — that remains the Tree-Walking Interpreter, per this item's own original framing of the PVM as an eventual, not immediate, default; switching the default (and correspondingly gating the Interpreter behind a `--interpret` flag) remains a future, separate decision, not automatically implied by the PVM existing.
+3. **Optimizer Pass** — ✅ **shipped in Phase 12** ([§31](#31-bytecode-optimizer-phase-12)). 8 ordered passes (constant folding/propagation, dead-code/jump/peephole/stack/constant-pool optimization, plus a final jump-target repair) operating on the bytecode between the Generator and the Validator/PVM, reached via `--optimize`/`--stats`/`--disassemble` or combined with `--compile`/`--run-bytecode`/`--bytecode`. Not the default — a plain `pari <file.pr>`/`pari <file.pbc>` is unaffected unless one of these flags is given.
 4. **Collections — Maps** — Lists shipped in Phase 9 as Arrays (`box`, [§28](#28-arrays-phase-9)); a key-value Map type remains future work, along with dedicated list-iteration support (`repeat item as x in list`) — arrays are iterated today via `repeat n as i` + indexing, per [§28.4](#284-iteration).
 5. **Object-Oriented Programming** — a minimal `type`-block construct (name TBD, to avoid clashing with the existing `type()` built-in) for user-defined structured records with methods.
 6. **Module System** — `import`/multi-file program support, once single-file programs stop being sufficient for the target audience's projects.
-7. **Native Compilation** — an ahead-of-time backend (e.g., via LLVM or a transpile-to-C step) for producing standalone native binaries from `.pbc`, once the VM and language surface are stable.
+7. **Native Compilation** — 🔶 **a genuine but minimal foundation shipped, Phase 13** ([§33](#33-native-compiler-phase-13-x86-64-backend)). Not via LLVM or a transpile-to-C step (neither was available on the build machine — no C compiler/assembler/linker of any kind was found) — instead, a hand-written x86-64 encoder and PE32+ writer, built directly from the AST (a Native IR sits between them, §33.4), producing a real, standalone `.exe` reached via `--native`. Today compiles only `say` with String literal arguments (§33.9); variables, arithmetic, control flow, and functions remain future work (§33.14), each gated behind the same "no feature without dedicated execution tests" discipline this item was shipped under.
+8. **Loop-aware optimizations** — loop-invariant code motion, strength reduction: the class of optimization that would meaningfully speed up a *loop body* rather than shrink a program's static instruction count (§31.11's own honest finding — Phase 12's passes reduce instruction count reliably, but a tight loop's wall-clock time tracks iteration count far more than static size). Not started.
+9. **Standard Library** — 🔶 **in progress, Phase 13** ([§32](#32-standard-library-phase-13)). Sub-phase 13a shipped: Math/String/Array/Type/System, ~45 new built-ins. Sub-phases 13b (File), 13c (JSON), 13d (Date & Time), and 13e (HTTP, deliberately last — §32.10) remain.
 
 ---
 
@@ -1472,6 +1565,13 @@ Ordered by planned sequence, each stage additive and non-breaking to existing `.
 | **Unit — Interpreter** | Arithmetic/comparison/logical evaluation, scope shadowing (§14.3 example), recursion, built-ins (§16.5) | `node:test` |
 | **Integration — Golden Files** | Each file in `examples/` has its expected stdout asserted against a full lex→parse→analyze→interpret run | `tests/e2e.test.js` (in-process) and `tests/cli.test.js` (spawns the real `pari` binary) |
 | **Error-Path Tests** | Every error code has a fixture `.pr` file that must fail with exactly that code | `node:test` |
+| **Unit — Bytecode Generator** (Phase 10) | Every construct's compiled shape, Validator soundness (stack balance, jump/constant/argCount checks) on every real example plus large/nested/recursive programs, binary/text writer round-trip fidelity | `tests/bytecode.test.js`, `tests/cli.test.js` |
+| **Unit — PVM** (Phase 11) | Every opcode, every runtime object, recursion/nested-task frame resolution, arrays, built-ins, stack overflow, every category of invalid/corrupted hand-built bytecode | `tests/vm.test.js` |
+| **Parity — Interpreter vs. PVM** (Phase 11) | Identical console output, exit code, and error code from BOTH backends, for every construct plus all real examples | `tests/vm-parity.test.js` |
+| **Unit — Bytecode Optimizer** (Phase 12) | Each of the 8 passes tested independently — the exact transformation it claims, and what it deliberately leaves alone (div-by-zero, arrays, parameters, side-effecting opcodes before `POP`); `PassManager`'s rejection of invalid pass output | `tests/optimizer.test.js` |
+| **Parity — Interpreter vs. optimized PVM** (Phase 12) | Identical console output, exit/error code between the unmodified Interpreter and Generator→Optimizer→PVM, for every construct plus all real examples plus a 10,000+ instruction program | `tests/optimizer.test.js` |
+| **Unit — Standard Library** (Phase 13) | Every new built-in's normal cases, invalid arguments/counts, domain/range errors (P028/P029), and Unicode strings, by category | `tests/math.test.js`, `tests/string.test.js`, `tests/array.test.js`, `tests/stdlib.test.js` |
+| **Parity — Interpreter vs. PVM, Standard Library** (Phase 13) | Identical console output/exit/error code from both backends for every new built-in in every stdlib category | `tests/stdlib.test.js` |
 | **Regression** | Any bug fix gets a permanent minimal-repro test added to the relevant suite | Manual discipline, enforced at PR review |
 
 **Coverage target:** ≥90% line coverage on `lexer/`, `parser/`, and `semantic/`; the interpreter and built-ins are covered primarily through the golden-file integration suite, since their correctness is best judged by end-to-end program output rather than line coverage alone.
@@ -1494,10 +1594,16 @@ parithi/
 │   ├── runtime/{environment.js, environment-stack.js, call-stack.js, runtime.js, execution-context.js, runtime-value.js, builtin-registry.js}
 │   ├── errors/{error-codes.js, source-location.js, compiler-error.js, runtime-error.js, index.js}
 │   ├── utils/{logger.js, colors.js, messages.js}
-│   └── cli/{args.js, commands.js, cli-error.js, exit-codes.js, version-info.js, suggestions.js, screens.js}
-├── examples/*.pr
-├── tests/foundation.test.js + {lexer,parser,semantic,interpreter}.test.js (added per phase) + e2e.test.js + error-messages.test.js (Phase 5) + runtime.test.js (Phase 6) + cli.test.js + fixtures/ (Phase 7)
-├── docs/{MASTER_DOCUMENT.md, ARRAYS_DESIGN.md, PHASE8_AUDIT_REPORT.md, RELEASE_NOTES.md, RELEASE_VERIFICATION_REPORT.md}
+│   ├── cli/{args.js, commands.js, cli-error.js, exit-codes.js, version-info.js, suggestions.js, screens.js}
+│   ├── bytecode/{opcode.js, instruction.js, constant-pool.js, label.js, bytecode-builder.js, bytecode-generator.js, validator.js, bytecode-writer.js, index.js} — Phase 10
+│   ├── vm/{virtual-machine.js, instruction-dispatcher.js, frame.js, stack.js, heap.js, memory.js, loader.js, builtins.js, runtime-values.js, vm-errors.js, debugger.js, index.js} — Phase 11
+│   ├── optimizer/{optimizer.js, pass-manager.js, optimizer-error.js, program-utils.js, statistics.js, optimizer-report.js, passes/{constant-folding,constant-propagation,dead-code-elimination,jump-optimization,peephole-optimization,stack-optimization,constant-pool-optimization,label-cleanup}.js, index.js} — Phase 12
+│   ├── stdlib/{math,string,array,type}/index.js, system/{index.js, program-args.js} — Phase 13a (§32); file/, json/, datetime/, http/ pending (13b-13e)
+│   └── native/{native-compiler.js, errors.js, codegen/{native-codegen.js, x86-64-encoder.js}, pe/{pe-writer.js, rdata-builder.js}} — Phase 13 native backend (§33); `say`-with-String-literals only
+├── examples/*.pr, stdlib/{calculator,random-number-generator,array-demo,string-utilities}.pr (Phase 13a), native/{hello,strings}.pr (Phase 13 native — the only two programs that genuinely compile natively today)
+├── tests/foundation.test.js + {lexer,parser,semantic,interpreter}.test.js (added per phase) + e2e.test.js + error-messages.test.js (Phase 5) + runtime.test.js (Phase 6) + cli.test.js + bytecode.test.js (Phase 10) + vm.test.js + vm-parity.test.js (Phase 11) + optimizer.test.js (Phase 12) + math.test.js + string.test.js + array.test.js + stdlib.test.js (Phase 13) + native/native-compiler.test.js (Phase 13 native — actually executes generated .exe files) + fixtures/ (Phase 7)
+├── benchmarks/optimizer-benchmark.mjs (Phase 12), native-benchmark.mjs (Phase 13 native — Hello World only, see §33.12) — dev tools, not part of the shipped package
+├── docs/{MASTER_DOCUMENT.md, ARRAYS_DESIGN.md, PHASE8_AUDIT_REPORT.md, RELEASE_NOTES.md, RELEASE_VERIFICATION_REPORT.md, OPTIMIZER_BENCHMARKS.md}
 ├── package.json
 ├── .gitignore
 ├── LICENSE
@@ -1520,7 +1626,11 @@ Deliberately excluded from v1.0, tracked here so scope stays explicit rather tha
 - **`else if` keyword** — v1.0 requires nested `if`/`end if` (§15.1); a dedicated keyword may be added later without breaking existing programs (nested form would remain valid).
 - **Grouped `option` values** (e.g., `option 1, 2` matching either) — v1.0's `choose` ([§15.2](#152-choose-switch-statement)) requires exactly one literal per `option`; grouping is a natural, non-breaking future addition once there's real demand for it.
 - **Full, untruncated call-stack traces** — v1.0 reports the innermost 2 call-stack frames plus a count of how many more are pinned beneath them (e.g. `... (498 more)`, see the P021 example in §18); complete N-frame traces are planned alongside the PVM work.
-- **Bytecode + VM + Optimizer + Native compilation** — see the full roadmap in [§23](#23-future-roadmap).
+- **Optimizer + Native compilation** — Bytecode generation (Phase 10, [§29](#29-bytecode-phase-10)) and execution (Phase 11's PVM, [§30](#30-parithi-virtual-machine-phase-11)) both shipped; optimizing the bytecode between them, and compiling it further to native code, remain future work — see the full roadmap in [§23](#23-future-roadmap).
+- **PVM as the default backend** — the PVM (§30) exists and is proven output-identical to the Interpreter (§30.11), but `pari <file.pr>` still runs on the Tree-Walking Interpreter by default; switching the default (and gating the Interpreter behind `--interpret`) is a deliberate future decision, not implied by the PVM's existence (§23 item 2).
+- **A step-debugger, profiler, or GC** for the PVM — `src/vm/debugger.js`'s `Heap`/`Memory`/`Debugger` classes (§30.4, §30.10) are the seams these would extend, deliberately left minimal until one is actually needed.
+- **File / JSON / Date & Time / HTTP standard library** — Phase 13 (§32) sub-phases 13b–13e; Math/String/Array/Type/System (13a) shipped. HTTP is deliberately last (§32.10) — it is the one library needing an actual concurrency-bridging decision (`worker_threads`/`Atomics.wait`, shelling out, or a real dependency) in an otherwise fully synchronous, zero-dependency codebase.
+- **Native compilation of the rest of the language** — Phase 13's native backend (§33) compiles only `say` with String literal arguments; variables, arithmetic, control flow, functions/recursion, and every Standard Library built-in remain future work, in the order recommended at §33.14. Only Windows x86-64 is targeted — Linux/macOS/ARM64 native targets are explicitly out of scope until the current target's language coverage is much broader.
 
 ---
 
@@ -1666,3 +1776,1673 @@ Total fruits: 3
 ```
 
 (`say` renders an array bracketed, with String elements quoted — `["a", "b"]`, not `[a, b]` — so an array's printed form is unambiguous; see `stringifyArray()` in `src/runtime/runtime-value.js`.)
+
+---
+
+## 29. Bytecode (Phase 10)
+
+Numbered 29, continuing straight on from §28 rather than being inserted
+earlier and renumbering anything — the same reason §28 itself was appended
+after the original §27 Conclusion (§28's own opening note explains it).
+
+### 29.1 Overview and Scope
+
+Phase 10 adds a **Bytecode Generator**: a new backend that translates a
+semantically-valid AST into **Parithi Bytecode** (`.pbc`), completely
+independent of the Tree-Walking Interpreter, which is untouched and remains
+the default execution path for plain `pari <file.pr>`. The pipeline gains
+one new, optional final stage:
+
+```
+Source (.pr) → Lexer → Parser → AST → Semantic Analyzer → Bytecode Generator → Parithi Bytecode (.pbc)
+                                                    ↘ (existing, unchanged) Tree-Walking Interpreter → Output
+```
+
+The Generator consumes exactly the same AST the Interpreter does, and
+**nothing upstream of it changed** — not one line in `src/lexer/`,
+`src/parser/`, `src/ast/`, `src/semantic/`, or `src/interpreter/` was
+modified for this phase (verified — `git diff`/file-by-file review shows
+zero changes to those directories; only `src/bytecode/` is new, plus a
+handful of `src/cli/` lines wiring up two new flags). This is the same
+"additive, not a rewrite" discipline §27's closing paragraph committed to:
+swapping in a new backend costs zero changes to the front end.
+
+**What this phase deliberately does NOT include** (§23 item 2 — explicitly
+out of scope, per the Phase 10 brief): the **Parithi Virtual Machine
+(PVM)** that would actually *execute* a `.pbc` file. `readBytecodeBinary()`
+(`src/bytecode/bytecode-writer.js`) exists only to verify the binary format
+round-trips correctly — deserializing a `.pbc` file back into its
+instruction/constant/function-table structure is not the same thing as
+running it, and no opcode's runtime *behavior* (what `ADD` actually does to
+two numbers, what happens on divide-by-zero) is implemented anywhere in
+this phase. §29.2 documents the execution model the Generator's output
+commits to, precisely enough to be unambiguous to whatever executes it —
+Phase 11's PVM ([§30](#30-parithi-virtual-machine-phase-11)) now does,
+implementing this exact model with no changes needed here.
+
+### 29.2 Execution Model (implemented by the PVM — §30, Phase 11)
+
+A stack-based machine with two independent stacks:
+
+- **Operand stack** — where every instruction's inputs/outputs live.
+  `compileExpression()` (`src/bytecode/bytecode-generator.js`) is the
+  Generator's own invariant: compiling any expression node pushes **exactly
+  one** value, regardless of the expression's internal complexity — the
+  same "leave the stack as you found it, net zero, per statement" discipline
+  extends to every `compileStatement()` call. This invariant is what
+  `validateBytecode()`'s stack-balance check (§29.6) mechanically verifies.
+- **Call stack** (§30.3's `Frame`) — one frame per active `CALL`, each frame a
+  fresh, empty name→value map. This mirrors `Environment`/`EnvironmentStack`
+  (§17.1–§17.2) directly: a `CALL` starts its callee with a *clean* operand
+  stack (§29.6 seeds validation at depth 0 at every function entry point)
+  and a clean local-variable frame, and `RETURN` pops that frame, leaving
+  exactly the return value behind on the *caller's* operand stack.
+
+**No scope-push/pop opcode exists** (the instruction set given for this
+phase has none), because it isn't needed: `if`/`while`/`repeat`/`choose`
+blocks share their enclosing function's single frame — only a `CALL` ever
+creates a new one. What makes shadowing (§14.3) safe without one is
+**compile-time slot mangling**: every `hold`/`const`/parameter/`repeat`
+counter declaration gets a globally-unique name, `<name>$<n>` (`$` cannot
+appear in a real Parithi identifier — §11.2 — so collision is impossible),
+resolved once, at compile time, by a scope-stack chain in the Generator
+that mirrors `SymbolTable`/`Environment`'s own parent-walk. Two `hold x`
+declarations at different nesting depths become two different `LOAD`/
+`STORE` targets; the PVM's `Frame` (§30.3) is just a flat map keyed by
+these mangled names — never a source-level name directly.
+
+**Task names are mangled exactly the same way**, through the *same* scope
+chain as variables (Parithi puts both in one namespace — §16.3, §12.1's
+audit note) — this is what lets a nested task share a name with an outer
+one (`predeclareTask`/`compileTaskDeclaration` distinguish them; see the
+worked example in §29.9) without the two colliding in the **function
+table** (§29.4). Built-in names (`round`, `push`, etc.) are never mangled —
+they're reserved and unshadowable (§16.5) — and `CALL` dispatches on
+whichever the name resolves to: a mangled entry in the function table, or,
+failing that, a raw built-in name, exactly mirroring
+`Interpreter.visitFunctionCall`'s own `isBuiltinName(name) ? callBuiltin(...) : ...` check.
+
+**Calling convention.** A `CALL <name>, <argCount>` instruction's `argCount`
+values are already on the operand stack (pushed by compiling each argument
+expression, left to right — §29.5's N-ary convention). The PVM's `CALL`
+handler (§30.5): pops `argCount` values (un-reversing them back to
+source order); creates a new frame; binds them, in order, to the callee's
+`paramSlots` (from the function table); pushes that frame; and jumps to the
+callee's `entryIndex`. `RETURN` pops the current frame and leaves the one
+value already on the operand stack (pushed by `compileReturnStatement`,
+which always compiles a value — even a bare `return`, or falling off the
+end of a function body, pushes `empty` first — §16.2/§16.4) for the caller.
+
+**Arrays keep their reference semantics with zero extra machinery**
+(§28.3): `LOAD` pushes whatever the frame's map holds for that slot — for
+an array, that's the same underlying collection reference `ARRAY_NEW`
+built, never a copy — so a builtin like `push()` that mutates its first
+argument in place is correctly visible to every alias, exactly like the
+Interpreter, with no bytecode-level distinction needed between "scalar"
+and "reference" values.
+
+**Deep equality.** `EQ`/`NE` must implement *structural*, not reference,
+equality (matching `Interpreter.visitBinaryExpression`'s `deepEquals()` —
+§28.3) — this is a property of what a correct PVM's `EQ` does, not
+something the Generator needs to encode differently; it always emits plain
+`EQ` for `==`, regardless of operand type.
+
+### 29.3 Instruction Set Reference
+
+26 opcodes (`src/bytecode/opcode.js`), fewer than the number of AST node
+types they replace — many statement/expression *shapes* (an `if`, a
+`while`, a short-circuit `and`) compile down to a handful of these,
+composed with jumps, rather than each getting a dedicated opcode.
+
+| Opcode | Operands | Stack effect | Meaning |
+|---|---|---|---|
+| `PUSH` | const | +1 | Push a constant-pool value |
+| `POP` | — | -1 | Discard the top value (every `ExpressionStatement`'s result) |
+| `LOAD` | const (name) | +1 | Push the current frame's value for this slot |
+| `STORE` | const (name) | -1 | Pop and store into this slot |
+| `ADD` `SUB` `MUL` `DIV` `MOD` `POW` | — | -1 | Pop right, pop left, push `left OP right` |
+| `NEG` | — | 0 | Pop, push its arithmetic negation |
+| `EQ` `NE` `GT` `LT` `GE` `LE` | — | -1 | Pop right, pop left, push a Boolean (`EQ`/`NE` are deep/structural — §29.2) |
+| `AND` `OR` | — | -1 | Eager (non-short-circuit) boolean combine — **defined but never emitted** for `and`/`or`, which are short-circuiting; see §29.5 |
+| `NOT` | — | 0 | Pop, push its logical negation |
+| `JMP` | target | 0 | Unconditional jump |
+| `JMP_IF_TRUE` / `JMP_IF_FALSE` | target | -1 | Pop; jump if the popped value matches, else fall through |
+| `CALL` | const (name), count | `1 − count` | Pop `count` args (un-reversed), invoke, push the result — §29.2 |
+| `RETURN` | — | 0* | End the current function; the value already on the stack becomes the call's result (*0 at the operand-stack level; the frame stack pops one — §29.2) |
+| `PRINT` | count | `−count` | Pop `count` values (un-reversed), write them space-joined + a newline (`say`) |
+| `INPUT` | — | 0 | Pop a prompt, write it, push the line read (`ask(...)`) |
+| `ARRAY_NEW` | count | `1 − count` | Pop `count` values (un-reversed), push a new array (`box(...)`) |
+| `ARRAY_GET` | — | -1 | Pop index, pop array, push the element |
+| `ARRAY_SET` | — | -3 | Pop index, pop value, pop array; write; push nothing |
+| `HALT` | — | -1 | Pop an exit code; stop. Always reached with exactly one pending value — see §29.5 |
+
+Every opcode's arity and stack effect is declared exactly once
+(`OPCODE_INFO` in `opcode.js`) and consumed identically by the Generator,
+the Validator, and both writers — one source of truth rather than three
+hand-synchronized copies.
+
+### 29.4 Constant Pool and Function Table
+
+**Constant pool** (`src/bytecode/constant-pool.js`) — every literal value
+and every mangled name `PUSH`/`LOAD`/`STORE`/`CALL` reference, deduplicated
+by *(type, value)* so `PUSH 5` appearing twice in a program is one pool
+entry, not two. Keyed by type, not raw JS value — a Number `5` and a
+Decimal `5` (from a literal written `5.0`) are different Parithi values
+(§12.2) even though `5 === 5.0` in JS, so they get separate entries.
+Variable/function names are pooled as plain Strings — a name is, at this
+layer, just a piece of text like any other.
+
+**Function table** — one entry per `task` declaration:
+`{ name (mangled), paramSlots (mangled, in order), entryIndex, isNested }`.
+`isNested` is `true` only when the task is declared lexically *inside
+another task's body* (not merely inside an `if`/`while`/`repeat`/`choose`
+block at the top level, which shares its enclosing scope's frame — §29.2)
+— read by the PVM's `CALL` handler to pick the new frame's `lexicalParent`
+(§30.3); not consulted by anything else in this phase.
+
+### 29.5 Labels and Control-Flow Patterns
+
+`src/bytecode/label.js` — a `Label` is a placeholder used only during
+generation (a forward jump like `if`'s `JMP_IF_FALSE` needs a target that
+doesn't exist yet); `BytecodeBuilder.resolve()` replaces every `Label`
+operand with its concrete instruction index in one pass once generation is
+done, throwing if a label was ever referenced but never placed.
+
+**N-ary convention** (`say a, b, c`; `box(1, 2, 3)`; a call's arguments):
+sub-expressions are pushed in left-to-right source order — so the *last*
+one ends up on top of the stack — and the consuming opcode (`PRINT`/
+`ARRAY_NEW`/`CALL`) pops that many values and **reverses** them to recover
+source order before using them. This generalizes the same rule every
+binary operator already follows for exactly two operands (`ADD` pops the
+*right* operand first, since it was pushed second/is on top).
+
+**`if`/`else`:** condition, `JMP_IF_FALSE` to the else-branch-or-end label,
+then-branch, (`JMP` to end + else-branch, if present), end label.
+
+**Short-circuit `and`/`or`** (§13.7, §29.2's note on `AND`/`OR`): compile
+`left`; `JMP_IF_FALSE`/`JMP_IF_TRUE` to a "short" label; compile `right`;
+`JMP` to end; at the short label, `PUSH` the short-circuit result
+(`false`/`true`); end label. This keeps bytecode behaviorally identical to
+`Interpreter.visitBinaryExpression` even when the unevaluated side would
+have thrown (e.g. `false and (1 / 0 > 0)` never reaches the division).
+
+**`while`:** condition label; condition; `JMP_IF_FALSE` to end; body;
+unconditional `JMP` back to the condition label; end label. `break`/
+`continue` are `JMP`s to the end/condition labels respectively.
+
+**`repeat n as i`:** the count expression is evaluated once (matching
+`Interpreter.visitRepeatStatement`, which reads `count` before the loop
+starts) and stashed in a hidden slot alongside the counter; `continue`
+jumps to the *increment* step (not straight back to the condition), so a
+bare `continue` still advances the counter — exactly like the JS `for`
+loop the Interpreter itself compiles down to.
+
+**`choose`/`option`/`other`:** the discriminant is evaluated once and
+stashed in a hidden slot (there is no `DUP` in this instruction set), then
+re-`LOAD`ed before each option's `EQ` comparison; each match is a
+`JMP_IF_TRUE` to that option's body; no match falls through to `other` (or
+straight to the end, if there's no `other` clause) — preserving "exactly
+one clause runs, no fall-through" (§15.2).
+
+**`task` declarations:** an unconditional `JMP` skips over the compiled
+body during normal top-to-bottom flow (a function's code is only ever
+*reached* via `CALL`, never fallen into); the body always ends with an
+implicit `PUSH empty; RETURN` after its last statement, even when every
+reachable path already returned explicitly — matching
+`Interpreter.callFunction`'s "fell through with no return ⇒ implicit
+empty" (§16.2), and harmless dead code on the paths that don't need it.
+
+**Program/function termination.** Every `HALT` and `RETURN` is reached
+with exactly one pending value by construction: a `stop [code]` statement
+compiles `code` (or `0`, if bare) then `HALT`; the top-level program always
+ends with an appended `PUSH 0; HALT` for normal (non-`stop`) termination;
+every function body ends in `PUSH empty; RETURN` at minimum. `HALT`
+popping a value, always, is why a plain, successful program still needs
+that trailing `PUSH 0` — there's no bare "stop with no value" form at the
+bytecode level, unlike `stop` in the language itself.
+
+### 29.6 Validation
+
+`validateBytecode()` (`src/bytecode/validator.js`) runs immediately after
+generation, both for `--bytecode` and `--compile` (there is no way to skip
+it) and checks four properties none of the Generator's control flow
+structurally guarantees on its own:
+
+1. **Constant references** — every `const`-kind operand indexes a real
+   pool entry.
+2. **Jump targets** — every `JMP`/`JMP_IF_TRUE`/`JMP_IF_FALSE` target, and
+   every function table `entryIndex`, is a real instruction index.
+3. **Argument counts** — a `CALL` naming a known task must pass exactly
+   that task's declared parameter count (a call to a built-in is skipped —
+   the built-in registry, §17.5, owns that arity, not the bytecode format).
+4. **Stack balance** — a symbolic depth walk over every reachable
+   instruction (a worklist algorithm, seeded fresh at depth 0 at
+   instruction 0 *and* at every function's entry point, since a `CALL`
+   never carries the caller's depth into the callee — §29.2), confirming
+   every instruction reached by more than one path agrees on depth, that
+   depth never goes negative, and that every `RETURN`/`HALT` is reached
+   with exactly one pending value.
+
+A validation failure is reported as an internal Generator bug (`Please
+report it with the source file that triggered it`, `src/cli/commands.js`'s
+`reportBytecodeBug`) — never as a defect in the *user's* program, since
+Semantic Analysis already guaranteed the program itself is valid before
+the Generator ever ran. In practice this should never fire; it exists as
+the same defensive backstop philosophy as `P023` (§18) — catching an
+internal inconsistency cleanly rather than however it would otherwise fail.
+
+### 29.7 File Formats
+
+**Text** (`formatBytecodeText()`) — what `pari --bytecode` prints: a
+title, the constant pool, the function table, then every instruction with
+its operands resolved to their actual values (a constant's value, not its
+raw pool index) — the whole point of this format is to be read by a
+person, so raw indices are only ever shown for `target` (jump) and `count`
+operands, which are already meaningful as plain integers.
+
+**Binary `.pbc`** (`writeBytecodeBinary()`/`readBytecodeBinary()`) — what
+`pari --compile` writes to disk. All integers are unsigned 32-bit
+little-endian unless stated otherwise:
+
+```
+magic            4 bytes, ASCII "PBC1"
+version          uint32              (currently 2 — see the version-2 note below)
+constantCount    uint32
+constants[]      constantCount ×:  typeTag (uint8) + payload (by type, below)
+functionCount    uint32
+functions[]      functionCount ×:  name (uint32 len + UTF-8), paramCount (uint32),
+                                    params[] (each: uint32 len + UTF-8),
+                                    entryIndex (uint32), isNested (uint8)
+instructionCount uint32
+instructions[]   instructionCount ×: opcodeId (uint8), line (uint32), column (uint32),
+                                    then that opcode's fixed operand count × uint32
+```
+
+Constant payloads by type tag: **Number**/**Decimal** → 8-byte float64 LE
+(both are JS doubles — §12.2 — so one payload shape serves both; the
+preceding tag is what keeps them distinct values); **String** → uint32
+length + UTF-8 bytes; **Boolean** → 1 byte; **Empty** → no payload (the
+tag alone is the whole value). An instruction's operand *count* isn't
+stored — it's derived from the opcode via the same `OPCODE_INFO` table the
+Generator/Validator use, keeping the format one byte per instruction
+tighter and impossible to desynchronize from the opcode list.
+
+**Version 2 (a Phase 11 bugfix, not a Phase 10 revision):** format version
+1, as originally shipped in Phase 10, did not serialize each
+instruction's `line`/`column` at all — only its opcode and operands. This
+was invisible to every Phase 10 test (the Validator and text listing never
+need source position), but it meant a runtime error raised from a `.pbc`
+file *loaded from disk* reported `file:null:null` instead of a real
+position, even though the identical program run via `--run-bytecode
+<file.pr>` (compiled to bytecode in memory, never round-tripped through
+the binary format) reported the correct one. Phase 11's own Validation
+requirement — the Interpreter and the PVM must match on "Runtime Errors,"
+not just successful output — is exactly what caught this discrepancy
+during final verification, which is why fixing it fell inside Phase 10's
+otherwise-frozen scope: it is a genuine defect in previously-shipped code,
+not a new feature. The fix adds `line`/`column` as two `uint32` fields
+per instruction (0 encodes "no position," since real Parithi source
+positions are always 1-based) and bumps `FORMAT_VERSION` to 2; a `.pbc`
+file written under version 1 is rejected (unsupported version) rather
+than silently misread, since no external consumer of the format existed
+yet to preserve compatibility for.
+
+`readBytecodeBinary()` is a full reader (not a stub) specifically so this
+phase's own test suite could verify the format round-trips exactly
+(instruction-for-instruction, constant-for-constant, including the
+version-2 `line`/`column` fields) — see `tests/bytecode.test.js`. Reading
+the structure back is not executing it; no opcode's *behavior* is
+implemented by this reader or anywhere else in Phase 10 (§29.1).
+
+### 29.8 CLI Usage
+
+Two new flags, added the same way every prior debug flag was (§19):
+
+```
+pari --bytecode hello.pr    # print the bytecode listing, then exit (does not execute the program)
+pari --compile hello.pr     # write hello.pbc next to the source, then exit (does not execute the program)
+```
+
+Both run the full Lexer → Parser → Semantic Analyzer pipeline first,
+unchanged, and report a compiler error exactly like every other command
+(§18) if the program doesn't pass — bytecode is only ever generated from a
+program that would also have run correctly under the Interpreter. Neither
+flag executes the program; `pari hello.pr` (no flag) is completely
+unaffected and remains the default, primary way to run a Parithi program.
+
+### 29.9 Worked Example
+
+```
+task fact(n)
+    if n <= 1
+        return 1
+    end if
+    return n * fact(n - 1)
+end task
+
+say fact(5)
+```
+
+`pari --bytecode` on the program above (abridged — constant pool omitted;
+`fact`'s mangled name and parameter are shown as `fact$0`/`n$1` for
+concreteness, though the exact numbers depend on how many other slots were
+mangled earlier in the same program):
+
+```
+0000  JMP 16
+0001  LOAD "n$1"
+0002  PUSH Number 1
+0003  LE
+0004  JMP_IF_FALSE 7
+0005  PUSH Number 1
+0006  RETURN
+0007  LOAD "n$1"
+0008  LOAD "n$1"
+0009  PUSH Number 1
+0010  SUB
+0011  CALL "fact$0", 1
+0012  MUL
+0013  RETURN
+0014  PUSH Empty
+0015  RETURN
+0016  PUSH Number 5
+0017  CALL "fact$0", 1
+0018  PRINT 1
+0019  PUSH Number 0
+0020  HALT
+```
+
+Instruction 0 skips the function body during normal top-to-bottom flow;
+`fact` is reached only via `CALL` (instructions 0011 and 0017, both naming
+the same mangled function). Instructions 0014–0015 are unreachable dead
+code (every real path through `fact`'s body already returns explicitly at
+0006 or 0013) — harmless, and exactly what §29.5 documents as the always-
+appended implicit fallthrough return.
+
+### 29.10 Testing
+
+`tests/bytecode.test.js` (54 tests) covers every category in the Phase 10
+brief — variables/constants/assignments (incl. shadowing producing distinct
+slots), every expression/operator (incl. proving `and`/`or` never emit the
+`AND`/`OR` opcodes), functions (recursion, mutual recursion, nested tasks,
+an injected wrong-argument-count case caught by the Validator), arrays
+(literals, indexing, every built-in), loops (`repeat`, `while`, `break`/
+`continue`, break/continue resetting inside a nested task), conditions and
+`choose`, the `stop` statement, 5-level nested control flow, a 500-statement
+program, near-call-depth-limit recursion, every real `examples/*.pr` file,
+and full text/binary-format round-trip fidelity. `tests/cli.test.js` adds
+the process-boundary layer: `--bytecode`/`--compile` on every example,
+compiler/semantic-error handling, confirming neither flag executes the
+program, and confirming the plain `pari <file>` path is byte-for-byte
+unaffected. All 508 tests (454 pre-Phase-10 + 54 new) pass; zero changes
+anywhere in `src/lexer/`, `src/parser/`, `src/ast/`, `src/semantic/`, or
+`src/interpreter/`.
+
+---
+
+## 30. Parithi Virtual Machine (Phase 11)
+
+Numbered 30, continuing straight on from §29, for the same reason §28 and
+§29 were appended rather than inserted earlier (§28's opening note).
+
+### 30.1 Overview and Scope
+
+Phase 11 adds the **Parithi Virtual Machine (PVM)**: a second, independent
+backend that *executes* the bytecode Phase 10 only ever *generated*.
+Before this phase, `--bytecode`/`--compile` produced a `.pbc` file or
+listing that nothing could run — §29.1 was explicit that "no opcode's
+runtime behavior is implemented anywhere in Phase 10." The PVM is exactly
+that missing piece, and nothing else: every opcode from §29.3 now has a
+real execution handler, a real operand stack, real call frames, and real
+built-in/array/arithmetic behavior — with **zero changes** to `src/lexer/`,
+`src/parser/`, `src/ast/`, `src/semantic/`, `src/interpreter/`,
+`src/runtime/`, the existing `src/cli/` command handlers, or any file
+under `src/bytecode/` (Generator, Validator, constant pool, binary format
+— all exactly as Phase 10 left them). The pipeline now has two complete,
+independent ways to execute a Parithi program:
+
+```
+                                                    ┌─→ Tree-Walking Interpreter ──────────────────────┐
+Source (.pr) → Lexer → Parser → AST → Semantic Analyzer ─┤                                                    ├─→ Output
+                                                    └─→ Bytecode Generator → Parithi Bytecode (.pbc) → PVM ─┘
+```
+
+`pari <file.pr>` still takes the left path, completely unaffected.
+`pari <file.pbc>` (bare, auto-detected by extension) and
+`pari --run-bytecode <file>` (either a `.pbc` file or a `.pr` file,
+compiled to bytecode in memory first) take the right path. Both paths are
+proven — not just asserted — to produce identical output, exit codes, and
+error codes for the same program: see §30.11.
+
+### 30.2 Design Principle: Reuse, Don't Reimplement
+
+The single most important architectural decision in this phase, applied
+everywhere it was possible to apply it: **wherever a piece of Parithi's
+actual *semantics* already has exactly one correct implementation, the PVM
+calls it directly rather than writing a second one.** This is what turns
+"the PVM must behave exactly like the Interpreter" from an aspiration into
+a structural guarantee — there is only ever one place that logic lives.
+
+| Concern | Reused from | Not reimplemented |
+|---|---|---|
+| Array indexing/assignment semantics, homogeneity checks | `src/interpreter/builtins/array.js`'s `assertIndexable`/`resolveIndex`/`checkElementType`/`validateHomogeneousElements` (the exact functions `Interpreter.visitArrayAccess`/`visitArrayAssignment`/`visitArrayLiteral` already call) | `ARRAY_GET`/`ARRAY_SET`/`ARRAY_NEW`'s bounds/type logic |
+| All built-in functions (`round`, `random`, `number`, `text`, `type`, `len`, `push`, `pop`, `insert`, `remove`, `sort`, `reverse`, `contains`) | `src/interpreter/builtins/index.js`'s `callBuiltin()`/`isBuiltinName()` | Every built-in's computation and argument-validation logic |
+| Deep/structural equality (`EQ`/`NE`), value-to-text rendering (`PRINT`) | `src/runtime/runtime-value.js`'s `deepEquals()`, `src/interpreter/stringify.js`'s `stringify()` | Array/nested-array comparison and display formatting |
+| Line reading for `ask()`/`INPUT` | `src/interpreter/stdin.js`'s `readLineSync()` | — |
+| Lexing, parsing, semantic analysis, bytecode generation/validation | The entire existing frontend and Phase 10, unmodified | Everything upstream of execution |
+
+What's genuinely **new** in this phase, because nothing existing could
+serve the purpose, is narrower than it might look: the operand stack, the
+call-frame chain and its two-parent-relationship model (§30.3), the
+instruction dispatch loop, and hand-mirrored arithmetic/comparison opcodes
+(§30.5 — the Interpreter implements these inline in
+`visitBinaryExpression` rather than as standalone functions, so there was
+nothing importable; they're kept to the same one-line-per-operator shape
+and verified against the Interpreter by the parity suite, §30.11, rather
+than by import).
+
+### 30.3 Memory Model — Frames, Locals, and the Two Kinds of "Parent"
+
+A `Frame` (`src/vm/frame.js`) is one call's local-variable storage: a
+`Map` from a Bytecode Generator slot-mangled name (`x$3` — §29.2) to its
+current value, plus two *different* parent links that answer two
+different questions:
+
+- **`lexicalParent`** — "where do I look up a name I don't have locally?"
+  Fixed to the **global frame** for a top-level task; for a task *nested*
+  inside another task's body, it's whichever frame was current at the
+  moment *this specific call* was made. Because Parithi has no first-class
+  function values (§28.1, §30.2) — a task is only ever callable from
+  within its own lexical visibility — "whoever is calling a nested task"
+  is always necessarily an active invocation of its immediately enclosing
+  task, so this one dynamic rule reproduces exactly what a real closure
+  object would give, without needing one. Proven by two dedicated parity
+  cases: a nested task reading its enclosing task's parameter through
+  *recursion* (seeing the innermost invocation's value, not an outer
+  one), and a *non-nested* helper task called from inside another
+  top-level task still resolving its free variables against **global**,
+  not its caller's locals (§30.11).
+- **`callerFrame`** (+ `returnIP`) — "who do I hand control back to, and
+  where, once `RETURN` runs?" Always simply whoever was current when
+  `CALL` was issued, ordinary call-stack semantics, independent of
+  nesting. `LOAD`/`STORE` never walk `callerFrame` — only
+  `lexicalParent`; `RETURN` uses `callerFrame` exclusively, never
+  `lexicalParent`.
+
+`STORE`'s "walk `lexicalParent`, and only if the name is found *nowhere*,
+define it in the current (innermost) frame" rule is what lets **one**
+opcode correctly serve both a fresh `hold`/`const` declaration and a later
+reassignment (including a nested task reassigning its enclosing task's
+variable) without the bytecode needing to distinguish them — guaranteed
+correct because the Generator's slot mangling makes every fresh
+declaration's name globally unique (§29.2), so it can never already exist
+anywhere the walk would find it.
+
+There is deliberately **no scope-push/pop opcode** (§29.3's instruction
+set has none) because `if`/`while`/`repeat`/`choose` blocks share their
+enclosing function's single frame — only a `CALL` ever creates a new one.
+Slot mangling alone (already proven correct by the Bytecode Generator's
+own tests, §29.10) is sufficient to keep a block's locals from colliding
+with an outer block's, at both compile time and now, proven, at run time.
+
+### 30.4 Memory Model — the Operand Stack and the Heap
+
+**Operand stack** (`src/vm/stack.js`) — one plain JS array, shared by every
+frame. A `CALL` pops its arguments off the *same* stack the caller was
+using; the callee pushes/pops "on top of" whatever remained. This works
+correctly with **zero per-call isolation** because every Bytecode
+Generator statement is proven stack-neutral (§29.6's Validator), so a
+callee's net effect (always +1, its return value) composes correctly
+regardless of what depth the caller happened to be at — there is no need
+to snapshot or restore stack depth around a `CALL`. A configurable maximum
+depth (100,000, independent of the call-depth limit below) guards against
+a hand-crafted or corrupted bytecode's tight `JMP` cycle that pushes
+without ever popping — never reachable from Generator output, but a real
+robustness backstop for anything else that produces `.pbc` files.
+
+**Heap** (`src/vm/heap.js`) — deliberately minimal: Parithi's only
+reference type is Array (§28.3), and its actual runtime representation in
+the PVM is a plain JS array, exactly the Interpreter's own representation
+(§17.4's `wrap()`) — reused, not reinvented, so JS's own garbage collector
+already manages the underlying memory with zero extra code. `Heap` adds
+only observational bookkeeping (an id per allocated array) on top,
+useful for a future debugger/profiler/collector without requiring any
+change to how arrays are represented or accessed anywhere else — the
+"future-ready... without requiring major architectural changes" seam the
+Phase 11 brief asked for. `Memory` (`src/vm/memory.js`) bundles the global
+frame and the heap into one owned object, mirroring how
+`src/runtime/runtime.js` (Interpreter, unmodified) bundles its own
+equivalent pieces.
+
+### 30.5 Instruction Execution Reference
+
+Every opcode from §29.3 has exactly one handler in
+`src/vm/instruction-dispatcher.js`, each `(vm, instruction) => nextIP |
+undefined` — `undefined` means "fall through to the next instruction,"
+matching how only `JMP`/`JMP_IF_TRUE`/`JMP_IF_FALSE`/`CALL`/`RETURN` ever
+need to redirect control flow explicitly.
+
+| Opcode | VM behavior |
+|---|---|
+| `PUSH` | Push the constant-pool value at the given index |
+| `POP` | Discard the top value |
+| `LOAD` | Push the current frame's value for this slot (walks `lexicalParent`; `P023` if truly nowhere — unreachable from valid bytecode) |
+| `STORE` | Pop; write into the slot per §30.3's walk-then-define rule |
+| `ADD`/`SUB`/`MUL`/`DIV`/`MOD`/`POW` | Pop right, pop left, push `left OP right` — hand-mirrored from `Interpreter.visitBinaryExpression` (§30.2); `DIV`/`MOD` by zero raise `P020`, exact message/hint parity |
+| `NEG` | Pop, push `-operand` |
+| `EQ`/`NE` | Pop right, pop left, push `deepEquals(left, right)` (or its negation) — **reused**, so structural/array equality matches the Interpreter exactly (§28.3) |
+| `GT`/`LT`/`GE`/`LE` | Pop right, pop left, push the JS comparison — Parithi values are always raw JS numbers/strings by this point, so no wrapping is needed |
+| `AND`/`OR` | Eager, non-short-circuit boolean combine — defined for completeness; never emitted by the Generator (§29.5) |
+| `NOT` | Pop, push `!operand` |
+| `JMP` | Unconditional jump to the (already-resolved, absolute) target |
+| `JMP_IF_TRUE`/`JMP_IF_FALSE` | Pop; jump if the popped value is strictly `true`/`false`, else fall through |
+| `CALL` | Pop `argCount` args (un-reversed to source order); if the name resolves in the function table, push a new `Frame` (§30.3) and jump to its entry point (checking the call-depth limit first — `P021` if exceeded, exact message parity with `CallStack`); else if it's a recognized built-in, call `callBuiltin()` (§30.2) and push its result; else `P015` |
+| `RETURN` | Pop the current frame (restoring `callerFrame` as current), resume at its `returnIP` — the value already on the operand stack becomes the call's result. `P023` if there is no active frame (unreachable from valid bytecode) |
+| `PRINT` | Pop `count` values (un-reversed), `stringify()` each, write them space-joined + a newline |
+| `INPUT` | Pop a prompt, write it, push the line read |
+| `ARRAY_NEW` | Pop `count` values (un-reversed), `validateHomogeneousElements()` (§28.3), allocate via `Heap`, push the array |
+| `ARRAY_GET` | Pop index, pop array, `assertIndexable()` + `resolveIndex()`, push the element |
+| `ARRAY_SET` | Pop index, pop value, pop array, `assertIndexable()` + `resolveIndex()` + `checkElementType()`, write |
+| `HALT` | Pop the exit code (truncated toward zero, matching `stop`'s own defensive truncation — §15.7), stop. Covers both a deliberate `stop [code]` and normal termination — there is no separate `STOP` opcode; §29.5 already established they compile identically |
+
+### 30.6 Error Handling
+
+Every VM error is a real `ParithiRuntimeError` (`src/vm/vm-errors.js`),
+formatted through the exact same `printError()`/`.format()` path as every
+other Parithi error (§18) — never a raw JS exception. Two families:
+
+- **Language-runtime errors**, reusing the Interpreter's exact documented
+  code, message shape, and hint for the same source-level mistake:
+  `P015` (unknown function), `P020` (division/modulo by zero), `P021`
+  (call-depth *or* operand-stack overflow — see §30.4), `P024`–`P027`
+  (array bounds/type errors, via the reused `array.js` helpers — §30.2).
+- **Bytecode-integrity errors** — conditions that can *never* happen from
+  Generator-produced, Validator-passed bytecode (an out-of-range jump, an
+  unrecognized opcode byte, an operand-stack underflow, a `RETURN` with no
+  frame, an out-of-range constant reference): all reuse **`P023`**, the
+  existing catch-all whose documented purpose already covers exactly this
+  ("a catch-all... so a raw stack trace can never reach the user," §18) —
+  extended here to a second source of "should be impossible": hand-crafted
+  or corrupted `.pbc` input, not just an unrecognized AST node. No new
+  error code was added anywhere in this phase.
+
+`VirtualMachine.run()`'s own outer catch-all deliberately does **not**
+call `currentLocation()` when wrapping an unexpected raw JS error as
+`P023` (passing `null` instead) — mirroring `Interpreter.run()`'s own
+choice, and for the same reason: whatever corrupted state caused the raw
+error in the first place could just as easily make a location lookup
+throw a second time. The call-stack trace is still attempted (wrapped in
+its own try/catch, falling back to an empty trace) since it only walks
+`currentFrame.callerFrame`, unaffected by that same class of corruption.
+
+Call-stack traces (`VirtualMachine.describeCallStack()`) strip the
+Bytecode Generator's slot-mangling suffix before display
+(`displayFunctionName()`, `frame.js`) — a trace reads `fact(...)`, not the
+internal `fact$0(...)`, purely a cosmetic derivation from the mangling
+convention itself (§29.2), needing no format change to recover.
+
+### 30.7 CLI Integration
+
+```
+pari hello.pbc                      # bare — auto-detected by extension, executes on the PVM
+pari --run-bytecode hello.pbc       # explicit — same effect
+pari --run-bytecode hello.pr        # compiles to bytecode IN MEMORY, then executes on the PVM (no .pbc file written)
+```
+
+`pari hello.pr` (no flag) is completely unaffected — extension detection
+happens once, at the top of the existing `run` dispatch case, and only a
+`.pbc` file is ever routed to the new path; everything else falls through
+to the unchanged Interpreter path exactly as before Phase 11. A loaded
+`.pbc` is re-validated with the Phase 10 Validator before execution (§29.6)
+— defensive, since a file that parses but is internally inconsistent
+(hand-edited, corrupted in transit) is a bad *file*, reported as a CLI
+usage error (exit `3`), not a runtime failure of a program that hasn't
+started executing. A genuinely malformed file (bad magic, wrong version,
+truncated) is likewise a usage error, matching how a missing or
+wrong-extension `.pr` file has always been handled (§19).
+
+### 30.8 What Was Deliberately Not Touched
+
+Verified, not merely asserted: no line changed in `src/lexer/`,
+`src/parser/`, `src/ast/`, `src/semantic/`, `src/interpreter/`,
+`src/runtime/`, or any file under `src/bytecode/`. The only pre-existing
+files touched at all were `src/cli/args.js` (one new flag entry),
+`src/cli/commands.js` (new dispatch cases and new functions — no existing
+function's body changed), and `src/cli/screens.js` (help text additions)
+— exactly the same "additive only" pattern Phase 10 already established
+for its own two new flags.
+
+### 30.9 Performance
+
+The dispatch loop (`VirtualMachine.step()`) never touches the AST — it
+only ever reads `this.instructions[this.ip]` and looks up one handler
+function in a flat object (`OPCODE_HANDLERS`), an O(1) dispatch per
+instruction. Function lookup for `CALL` (task vs. built-in) is an O(1)
+`Map` lookup (`functionsByName`) rather than a linear scan. Call-depth
+overflow checking is an O(1) integer comparison (`vm.callDepth`), not a
+walk of the frame chain — that walk (`describeCallStack()`) is reserved
+for the error-reporting path, which only ever runs once, when something
+has already gone wrong.
+
+### 30.10 Debugger (Future-Ready)
+
+`src/vm/debugger.js`'s `Debugger` class is a read-only introspection
+layer over a running `VirtualMachine` — current instruction, operand-stack
+contents, active frames (with their locals), and global variables —
+mirroring how `pari --runtime` (§19) is a thin reporting layer *on top of*
+`Interpreter`/`Runtime` rather than logic baked into the Interpreter
+itself. A future step-debugger, profiler, or a `--vm-runtime` CLI flag
+extends this class; none of it requires changing `VirtualMachine` or
+`instruction-dispatcher.js`.
+
+### 30.11 Validation — PVM vs. Interpreter Parity
+
+`tests/vm-parity.test.js` is the Phase 11 brief's own "Validation" section
+made permanent: every one of its 39 tests runs a program through **both**
+backends — the unmodified Tree-Walking Interpreter, and Bytecode Generator
++ PVM — and asserts identical console output, exit code, and (for programs
+that error) error code. Coverage: every operator, every control-flow
+construct (including nested and short-circuit-with-a-would-throw-branch
+cases), functions (recursion, mutual recursion, nested tasks resolving
+free variables through recursion), every array operation and built-in,
+every documented runtime error, `ask()`/`say`, all eleven real
+`examples/*.pr` files, and several larger hand-written programs (a bubble
+sort, a 50,000-iteration loop, 5-level-deep nested control flow). All 39
+pass. This is a stronger correctness claim than either backend's own test
+suite alone: it's not "the PVM behaves as I intended," it's "the PVM and
+the Interpreter — two structurally unrelated execution strategies —
+compute the identical answer for the identical program," checked
+mechanically, for every construct in the language.
+
+### 30.12 Testing Summary
+
+`tests/vm.test.js` (74 tests): every opcode individually, every runtime
+object (via `say`/equality), recursion and nested tasks (including the two
+`lexicalParent` cases described in §30.3), every array operation and
+built-in, stack overflow (both call-depth and raw operand-stack), every
+category of invalid/corrupted hand-built bytecode (unrecognized opcode,
+out-of-range jump, out-of-range constant, stack underflow, `RETURN` with
+no frame, an unknown `CALL` target, running off the end without `HALT`,
+and a raw JS error mid-execution correctly wrapped as `P023` without
+itself throwing a second raw error — §30.6), unmangled call-stack traces,
+large/stress programs, and every real example program. `tests/vm-parity.test.js`
+(39 tests, §30.11). `tests/cli.test.js` gained 10 more (§30.7's CLI
+surface, including corrupted/missing/wrong-type `.pbc` handling). Total:
+**632 tests** (508 pre-Phase-11 + 123 new + 1 more added by the binary-format
+line/column bugfix — §29.7), all passing, zero regressions.
+
+---
+
+## 31. Bytecode Optimizer (Phase 12)
+
+Numbered 31, continuing straight on from §30, for the same reason §28–§30
+were appended rather than inserted earlier (§28's opening note).
+
+### 31.1 Overview and Scope
+
+Phase 12 adds the **Bytecode Optimizer**: an optional post-processing stage
+that sits between the (unmodified) Bytecode Generator (§29) and the
+(unmodified) Validator/PVM (§30). It takes the exact program shape the
+Generator produces — `{ instructions, constants, functions }` — and
+returns a program that is smaller-or-equal in instruction count and
+constant-pool size, computing the *identical* result, for the *identical*
+input, with the *identical* observable behavior (console output, exit
+code, and — for a program that errors — the same error code). Nothing
+here changes what any opcode *means*; every pass only ever deletes
+instructions, deletes constants, or replaces a short run of instructions
+with an even shorter one computing the same value. The pipeline gains one
+new, entirely optional stage:
+
+```
+Source (.pr) → Lexer → Parser → AST → Semantic Analyzer → Bytecode Generator
+                                            → Bytecode Optimizer (optional, §31)
+                                            → Validator → PVM
+```
+
+**Zero lines changed** in `src/lexer/`, `src/parser/`, `src/ast/`,
+`src/semantic/`, `src/interpreter/`, `src/runtime/`, anywhere under
+`src/bytecode/` (Generator, Validator, constant pool, binary format — all
+exactly as Phase 10/11 left them), or anywhere under `src/vm/` (every
+opcode's execution semantics are exactly as Phase 11 left them) — the same
+"protected, complete, do not modify unless a real bug is discovered"
+discipline this brief itself was given, honored the same way Phase 11
+honored it for Phase 10's work. The Optimizer is invoked **only** when
+explicitly requested (`--optimize`/`--stats`/`--disassemble`, or combined
+with `--compile`/`--run-bytecode`/`--bytecode`, §31.9) — a plain
+`pari <file.pr>` or `pari <file.pbc>` is completely unaffected by this
+phase's existence, exactly the same "additive, never a silent behavior
+change" pattern Phase 10 and 11 both established for their own new flags.
+
+### 31.2 Architecture
+
+`src/optimizer/`:
+
+- **`optimizer.js`** — `optimizeBytecode(program)`, the entry point. Runs
+  the fixed, ordered 8-pass sequence (§31.3) through `PassManager`,
+  re-sweeping the whole sequence (capped at `maxIterations`, default 4)
+  until a full sweep reports no change from any pass — see §31.9 for why
+  one sweep alone doesn't always reach a global fixed point.
+- **`pass-manager.js`** — `PassManager.run(program)` executes one ordered
+  sweep of passes, re-validating with the Phase 10 Validator
+  (`validateBytecode()`, §29.6) after **every single pass**, not only at
+  the end — the brief's own explicit requirement ("run Bytecode Validator
+  again. If optimization creates invalid bytecode, reject it immediately.
+  Never emit invalid bytecode").
+- **`optimizer-error.js`** — `OptimizerError`, thrown (never silently
+  swallowed) when a pass's output fails that re-validation — the same
+  "this is an implementation bug, not the user's program's fault" spirit
+  as `P023` (§18) and `reportBytecodeBug` (§29.6).
+- **`program-utils.js`** — the one shared piece of bookkeeping every
+  instruction-deleting pass needs: `buildIndexMap()`/`remapProgram()`
+  renumber every surviving jump target and function `entryIndex` after
+  instructions are dropped, and `collectReferencedIndices()` finds every
+  position something still jumps to. Written once, here, so five different
+  passes don't each hand-roll a slightly different (and slightly
+  differently buggy) version of the same renumbering logic.
+- **`statistics.js`** / **`optimizer-report.js`** — Pass 9: before/after/
+  removed counts and the `--stats` report text (§31.8).
+- **`passes/`** — one file per pass, each exporting `name` (a string) and
+  `run(program) => program`, pure (a pass with nothing to do returns the
+  exact same object reference it was given, both as a cheap "did anything
+  change" signal and to let `optimizeBytecode`'s convergence loop detect a
+  fixed point cheaply).
+
+**Why the program shape needs no new "label" concept.** A jump `target`
+operand in this program shape is always already a concrete instruction
+index — `BytecodeBuilder.resolve()` (§29.5) replaced every symbolic
+`Label` with one before generation ever finished. This means every pass
+that deletes instructions must renumber surviving jump targets itself
+(`program-utils.js`'s job); it also means Pass 8 ("Label Cleanup" in the
+brief's own naming) has no separate label table left to clean — see its
+own class doc, §31.3.
+
+### 31.3 The 8 Passes (fixed order)
+
+| # | Pass | What it does | What it deliberately leaves alone |
+|---|---|---|---|
+| 1 | **ConstantFolding** | `PUSH c1; PUSH c2; <BINOP>` or `PUSH c; <UNARY>` → one `PUSH` of the precomputed result, for `+ - * / % **`, `== != < > <= >=`, `and or not`, and String `+` concatenation. Folds a chain (`2 + 3 + 4`) to a fixed point within this pass alone. | `DIV`/`MOD` by a constant `0` (would swallow or mislocate the runtime `P020`); any fold whose middle instruction is itself a jump target |
+| 2 | **ConstantPropagation** | Replaces every `LOAD` of a slot written by `STORE` **exactly once, anywhere in the program**, from a literal `PUSH`, with that literal directly, then removes the now-dead declaration. A single-assignment analysis, not a `const`-vs-`hold` check (bytecode has already erased that distinction — §29.2) — see §31.4 | Any slot assigned more than once; any array declaration (`ARRAY_NEW`, not `PUSH`, always precedes its `STORE`); function parameters (bound by `CALL`, never `STORE`d at all) |
+| 3 | **DeadCodeElimination** | Removes instructions unreachable after `RETURN`/`HALT`/an unconditional `JMP`, up to the next instruction something still jumps to | Any code reached by a jump target, even directly after a terminal instruction (a loop's own condition label, for instance) |
+| 4 | **JumpOptimization** | Collapses a `JMP`-to-`JMP` chain to point at the final target; deletes an unconditional `JMP` whose target is the very next instruction | A conditional jump (`JMP_IF_TRUE`/`FALSE`) whose target is the next instruction — it must still pop the tested value |
+| 5 | **PeepholeOptimization** | Removes a `LOAD x; STORE x` no-op pair; re-runs Pass 1's exact fold rule (imported, not duplicated) on adjacencies Propagation/earlier passes newly exposed — see §31.5's worked example | The instruction set has no `NOP` opcode (§29.3), so that classic peephole rule has nothing to match |
+| 6 | **StackOptimization** | Removes an immediately adjacent `PUSH x; POP` or `LOAD x; POP` pair (push a value, discard it unread — a true no-op) | `INPUT;POP`/`CALL;POP`/any other side-effecting push-like opcode before `POP` — the side effect must still happen even though the *result* goes unused |
+| 7 | **ConstantPoolOptimization** | Rebuilds the constant pool with only entries a surviving instruction still references, in original relative order, rewriting every `const`-kind operand | Nothing to leave alone here — but see §31.6 for why "merge duplicates" is mostly already guaranteed before this pass even runs |
+| 8 | **LabelCleanup** | Re-runs Pass 4's jump-chain collapse one more time, now that Passes 5–7 have had a chance to create new indirection Pass 4 (running earlier) couldn't see yet — see §31.7 for why this is genuinely useful, not a restatement of Pass 4 | — |
+| 9 | **Statistics** | Not a bytecode-transforming pass — computes before/after/removed instruction and constant counts, an optimization ratio, and a qualitative execution estimate; backs `--stats` (§31.8) | — |
+
+Every pass lives in its own file under `src/optimizer/passes/`, is
+independently unit-tested (`tests/optimizer.test.js`), and is re-validated
+by `PassManager` immediately after it runs (§31.2) — the brief's own
+"test every optimization independently" and "never emit invalid bytecode"
+requirements, both satisfied structurally rather than by convention alone.
+
+### 31.4 Why Constant Propagation Is Single-Assignment Analysis, Not a `const` Check
+
+By the time bytecode exists, the Bytecode Generator has already erased the
+`hold`/`const` distinction on purpose (§29.2) — `compileVariableDeclaration`
+emits the identical `PUSH; STORE` shape for both, and nothing in the
+`Instruction`/`ConstantPool` format records which keyword declared a slot.
+Re-deriving "is this a `const`" from the AST or Semantic Analyzer would
+mean the optimizer reaching back past the exact boundary the rest of this
+phase (and Phase 10 before it) was built to respect. Instead, Pass 2 asks a
+strictly more general, and still exactly as safe, question directly of the
+bytecode: **is this slot written by `STORE` exactly once, anywhere in the
+whole program, from a literal value?**
+
+A slot assigned exactly once has only one possible value for its entire
+lifetime, regardless of whether it was declared `hold` or `const` — this
+provably includes every `const` (`P005` forbids ever reassigning one,
+§14.2) and additionally captures a `hold` that simply never happens to be
+reassigned, which is strictly *more* optimization than a syntactic
+"const-only" rule while remaining exactly as behavior-preserving. Two
+correctness properties fall out of this design for free, by construction
+rather than by a special-case check:
+
+- **Arrays are never mis-propagated.** The pattern requires the
+  instruction *immediately before* the sole `STORE` to be a `PUSH` of a
+  scalar constant-pool entry. `box(...)` always compiles to
+  `..., ARRAY_NEW n, STORE` (§29.3) — a different opcode from `PUSH` — so
+  an array-valued declaration can never match. Reference semantics
+  (§28.3) are untouched by this pass, not by a type-check carve-out.
+- **Parameters are never touched.** A parameter's slot is bound directly
+  by the PVM's `CALL` handler (`frame.bind()`, §30.5) — there is no
+  `STORE` instruction anywhere in the bytecode for it, so it never even
+  appears in this pass's "slots written by `STORE`" analysis.
+
+### 31.5 Worked Example — Why Peephole Re-Runs Constant Folding
+
+```
+const PI = 3.14
+hold area = PI * 10
+say area
+```
+
+compiles to `PUSH 3.14; STORE PI$n; LOAD PI$n; PUSH 10; MUL; STORE area$m;
+LOAD area$m; PRINT 1; PUSH 0; HALT`. Walking the fixed pass order once:
+
+1. **ConstantFolding** sees `LOAD, PUSH, MUL` before the `STORE area$m` —
+   not foldable (a `LOAD` isn't a literal). No change.
+2. **ConstantPropagation** finds `PI$n` single-assignment-from-a-literal:
+   replaces `LOAD PI$n` with `PUSH 3.14` and deletes the dead
+   `PUSH 3.14; STORE PI$n` declaration. Now: `PUSH 3.14; PUSH 10; MUL;
+   STORE area$m; LOAD area$m; PRINT 1; PUSH 0; HALT`.
+3. **DeadCodeElimination**, **JumpOptimization** — nothing to do.
+4. **PeepholeOptimization** now sees `PUSH 3.14; PUSH 10; MUL` — a triple
+   Pass 1 never had a chance to see, since it ran *before* Propagation
+   exposed it. Folds it: `PUSH 31.4; STORE area$m; LOAD area$m; PRINT 1;
+   PUSH 0; HALT`.
+5. **StackOptimization**, **ConstantPoolOptimization**, **LabelCleanup** —
+   nothing left to do *this sweep*.
+
+One sweep of all 8 passes is done, but `area$m` is now *itself*
+single-assignment-from-a-literal — a fact only true *after* step 4 folded
+its initializer, too late for step 2 (Propagation) to have caught in this
+same sweep. `optimizeBytecode()` re-sweeps the whole ordered sequence
+(§31.9) precisely to catch this: sweep 2's ConstantPropagation inlines
+`area$m` too, and the final result is the theoretical minimum:
+`PUSH 31.4; PRINT 1; PUSH 0; HALT` — 4 instructions from an original 10,
+with the constant pool correspondingly shrunk by Pass 7.
+
+### 31.6 Constant Pool Optimization and Duplicate Merging
+
+`ConstantPool.add()` (§29.4) already deduplicates on insert — every pass
+in this pipeline that introduces a *new* constant (Folding, Peephole)
+routes through that same `add()` call, so a literal duplicate of an
+existing entry is never created in the first place during optimization.
+Pass 7 rebuilds the pool through a fresh `ConstantPool` anyway, which
+makes that guarantee unconditional rather than reliant on every pass
+author remembering to route through `add()` — any duplicate that slipped
+in some other way would be merged for free by the same mechanism. Pass 7's
+actual, distinctive contribution is the other half of its name: dropping
+entries nothing still references, which is common by the time it runs —
+Propagation's inlining leaves a literal referenced from one *new* place
+while the old declaration that used to reference it is gone; anything only
+ever reachable through code Passes 3–4 already deleted is now a true
+orphan.
+
+### 31.7 Why "Label Cleanup" Is a Second Jump-Collapse Pass, Not a No-Op
+
+The brief's Pass 8 is named for what an assembler with still-symbolic
+labels would do at this point in a pipeline — remove unreferenced labels,
+renumber the rest, repair jump targets. Parithi Bytecode has no such
+structure to act on by the time the Optimizer ever runs: `Label` objects
+(§29.5) exist only *during* generation, and `BytecodeBuilder.resolve()`
+replaces every one with a concrete instruction index before generation
+finishes — every jump target already *is* an address, not a name. Rather
+than implement a pass with nothing left to clean, `LabelCleanup` re-runs
+`JumpOptimization`'s exact jump-chain-collapse logic (imported, not
+duplicated) one more time — the practical equivalent of "repair jump
+targets" for an address-based format, and genuinely useful precisely
+because Passes 5–7, all running *after* Pass 4, can shift instructions
+around and expose new jump-to-jump or jump-to-next indirection Pass 4 had
+no way to see yet.
+
+### 31.8 Statistics and the `--stats` Report
+
+Pass 9 (`statistics.js`) is arithmetic over already-known counts, not a
+bytecode inspection of its own: instructions/constants before and after,
+how many of each were removed, an optimization ratio
+(`removed / before × 100`), and a qualitative execution estimate ("Faster"
+if any instruction was removed, "No Change" otherwise). `optimizer-
+report.js` renders this, plus a per-pass breakdown (each pass's own
+before/after counts and whether it changed anything this sweep), as the
+text `pari <file.pr> --stats` prints:
+
+```
+Optimization Report for area.pr
+------------------------------------------------------------------------
+
+Instructions Before   : 10
+Instructions After    : 4
+Removed Instructions  : 6
+
+Constants Before      : 6
+Constants After       : 2
+Removed Constants     : 4
+
+Optimization Ratio    : 60.00%
+Execution Estimate    : Faster
+
+Per-Pass Breakdown:
+  ConstantFolding              10 -> 10 instr. (0), 6 -> 6 const. (0) [no change]
+  ConstantPropagation          10 -> 8  instr. (-2), 6 -> 6 const. (0) [changed]
+  ...
+```
+
+A pass's own constant count can legitimately *increase* mid-sweep (Folding
+pools a brand-new folded value before Pool Optimization later shrinks the
+pool again) — the per-pass delta is rendered signed (`+1`/`-2`/`0`) rather
+than always prefixed with a bare `-`, specifically to avoid a
+double-negative-looking `(--1)` for that case.
+
+### 31.9 CLI Integration
+
+```
+pari hello.pr --optimize             # display the optimized bytecode listing (does NOT execute)
+pari --optimize hello.pr             # same, leading-flag form
+pari hello.pr --stats                # display the Pass 9 optimization report
+pari hello.pr --disassemble          # same display as --optimize (see below)
+pari --compile hello.pr --optimize   # write an OPTIMIZED .pbc file
+pari --run-bytecode hello.pr --optimize   # execute optimized bytecode on the PVM directly
+pari --bytecode hello.pr --optimize  # display the optimized listing via the existing --bytecode flag
+```
+
+Three flags, two different calling conventions, both deliberate:
+
+- **`--optimize`** is a **modifier**, exactly like `--verbose` already is —
+  it may appear anywhere in argv and composes with whichever primary mode
+  was selected. Combined with plain `run` mode (`pari hello.pr --optimize`,
+  matching the brief's own literal CLI examples), it is a **display**
+  command — it does not execute the program, matching how `--bytecode`/
+  `--ast`/`--tokens` already behave for a `.pr` file. To actually
+  *execute* optimized bytecode end-to-end on the PVM, combine `--optimize`
+  with `--run-bytecode`, or run a `--compile --optimize`-produced `.pbc`
+  file directly (bare `pari hello.pbc` has always been execute-only, with
+  no pre-existing "just display" behavior to preserve — so `--optimize`
+  there means "execute it, but optimized first," the one place its
+  meaning differs from the `.pr` case, for a principled reason).
+- **`--stats`** / **`--disassemble`** are **dedicated modes** (like
+  `--bytecode`) — but, unlike every other dedicated mode, the brief's own
+  CLI examples show them trailing the filename
+  (`pari hello.pr --stats`), not leading it. Both positions are accepted.
+  `--optimize` and `--disassemble` are intentionally the same display —
+  both print the optimized program via the exact `formatBytecodeText()`
+  listing `--bytecode` already uses (§29.7); there is no meaningful
+  behavioral difference to invent between "the optimized bytecode" and
+  "readable optimized bytecode," so none was fabricated.
+
+An `OptimizerError` reaching the CLI layer (a pass producing invalid
+bytecode — should be unreachable given every pass's own correctness
+argument, §31.3) is reported exactly like a Generator bug
+(`reportBytecodeBug`, §29.6): never the user's program's fault, since the
+un-optimized bytecode already passed the exact same Validator once before
+the Optimizer ever ran.
+
+### 31.10 Validation — Optimized-PVM vs. Interpreter Parity
+
+`tests/optimizer.test.js`'s regression suite is this phase's own
+"Validation" section made permanent, following the exact method Phase 11
+established for Interpreter/PVM parity (§30.11): every program runs
+through the unmodified Tree-Walking Interpreter and through Bytecode
+Generator → Optimizer → PVM, and both must produce identical console
+output, and either identical exit code or identical error code. Coverage:
+nested loops, recursive and mutually-recursive functions, every
+`choose`/`option`/`other` shape, every array operation and built-in, `stop`
+(bare, coded, from nested control flow), every documented runtime error
+(division/modulo by zero, array bounds/type errors, call-depth overflow),
+every real `examples/*.pr` file, a generated 18,000+ instruction program
+(3,000 single-assignment declarations, exercising Folding/Propagation at
+scale), and a 50,000-iteration loop. All pass. `tests/cli.test.js` gained
+9 more tests for §31.9's CLI surface, including proving a
+`--compile --optimize`-produced `.pbc` is measurably smaller than its
+unoptimized counterpart and still runs to the identical output.
+
+### 31.11 Performance
+
+Full before/after measurements — instruction count, constant-pool size,
+and PVM wall-clock time, for Hello World, Calculator, recursive Fibonacci,
+Factorial, a 100,000-iteration loop, a 5,000-element array, nested loops,
+deep recursion, and a constant-heavy generated program — are in
+[`docs/OPTIMIZER_BENCHMARKS.md`](OPTIMIZER_BENCHMARKS.md), produced by
+[`benchmarks/optimizer-benchmark.mjs`](../benchmarks/optimizer-benchmark.mjs).
+The honest summary: constant-heavy and straight-line arithmetic programs
+see the largest wins (53–67% fewer instructions, a measurable wall-clock
+improvement); loop- and recursion-dominated programs see a smaller but
+real instruction-count reduction (6–10%), with wall-clock time tracking
+*instruction count*, not *iteration count* — shaving a few instructions
+off a loop body that runs 100,000 times barely moves a benchmark whose
+cost is dominated by how many times the PVM's dispatch loop runs, not by
+how large the static program is. This is the expected, correct behavior
+for the class of optimizations this phase implements (constant folding/
+propagation, dead-code/jump/peephole/stack/pool cleanup) — a genuinely
+faster *loop* would require a different class of optimization
+(loop-invariant code motion, strength reduction) outside this phase's
+brief, and the benchmark doc says so plainly rather than implying a
+speedup this design doesn't produce for loop-dominated workloads.
+
+### 31.12 Testing Summary
+
+`tests/optimizer.test.js` (54 tests): each of the 8 passes tested
+independently — the exact transformation it makes, and just as
+importantly, what it deliberately leaves alone (div-by-zero, arrays,
+parameters, side-effecting opcodes before `POP`, conditional jumps);
+`PassManager`'s rejection of a deliberately corrupting fake pass;
+`optimizeBytecode()`'s convergence and statistics/report rendering; and
+the full parity regression suite described in §31.10. `tests/cli.test.js`
+gained 9 more (§31.9's CLI surface). Total: **695 tests** (632 pre-Phase-12
++ 54 new optimizer tests + 9 new CLI tests), all passing, zero
+regressions, with every protected module (§31.1) verified unchanged.
+
+---
+
+## 32. Standard Library (Phase 13)
+
+Phase 13 expands Parithi's built-in function library — no language syntax,
+keyword, grammar, AST, Semantic Analyzer *logic*, Bytecode, VM, or
+Optimizer change. Every function below is a new entry in the exact same
+extension points Phase 9's array built-ins already used: `BUILTIN_SIGNATURES`
+(`src/semantic/types.js`, static arity/type checking),
+`TypeChecker.checkBuiltinCall` (`src/semantic/type-checker.js`, per-argument
+static validation), and the `BuiltinRegistry` (`src/interpreter/builtins/index.js`,
+runtime dispatch) — the same reuse this document has praised since §30.2:
+the PVM calls `callBuiltin()` directly (`src/vm/builtins.js` is a thin
+re-export), so every function documented here works identically on both
+backends with **one** implementation, not two.
+
+Given the phase's size (~9 categories, dozens of functions, network/file
+I/O), it shipped in sub-phases rather than one pass, each fully tested and
+documented before the next began:
+
+| Sub-phase | Scope | Status |
+|---|---|---|
+| 13a | Math, String, Array, Type, System (synchronous, no new dependency) | ✅ shipped (this section) |
+| 13b | File I/O | not started |
+| 13c | JSON | not started |
+| 13d | Date & Time | not started |
+| 13e | HTTP | not started — see §32.10 for why this is deliberately last |
+
+### 32.1 Math Library
+
+New: `sqrt()`, `pow()`, `abs()`, `floor()`, `ceil()`, `min()`, `max()`,
+`randomInt()`, `sin()`, `cos()`, `tan()`, `log()`, `exp()`. `round()`/
+`random()` are Phase 6 and unchanged.
+
+- `min()`/`max()` are **variadic** (2 or more arguments) — the only
+  built-ins in the language with an open-ended argument count;
+  `BUILTIN_SIGNATURES`'s `maxArgs: Infinity` and `describeArgCount()`
+  render this as "2 or more" in a P016 message rather than the confusing
+  literal `2-Infinity`.
+- `sqrt()` of a negative number and `log()` of zero or a negative number
+  raise the new **P028 (Math domain error)** — not P002 (that code means
+  "wrong type," not "right type, undefined value").
+- Every other function is a thin, defensively-validated wrapper over the
+  matching `Math.*` — `pow`/`sin`/`cos`/`tan`/`log`/`exp` documented as
+  returning Decimal (fraction-prone), `abs`/`floor`/`ceil`/`min`/`max`/
+  `randomInt` as Number, exactly like `round()`'s own existing
+  Number-vs-Decimal convention (§16.3) — this is a *static* hint for the
+  type checker only; the actual runtime value's Number-vs-Decimal boxing
+  is decided the same way it always has been, by
+  `RuntimeValue.wrap()`'s `Number.isInteger()` check (§12.2), so which one
+  is declared here never causes an incorrect result.
+
+### 32.2 String Library
+
+New: `upper()`, `lower()`, `trim()`, `split()`, `join()`, `replace()`,
+`startsWith()`, `endsWith()`, `substring()`, `lastIndexOf()`,
+`repeatText()`, `reverseText()`. `len()` is Phase 6/9 and unchanged.
+
+- `contains()` and `indexOf()` are **polymorphic** — String or Array — the
+  same "one name, dispatch on the runtime value's actual type" pattern
+  `len()` already established in Phase 9 for "how long is this." A
+  String first argument requires a String second argument (P002
+  otherwise); an Array first argument keeps Phase 9's exact deep-equality
+  behavior. Only one implementation can be registered per name, so the
+  dispatch lives in `src/stdlib/array/index.js` (which already owned
+  `contains()`), calling back into `src/stdlib/string/index.js`'s
+  string-only helpers for a String first argument.
+- `replace()` replaces **every** occurrence (`replace("banana", "a", "o")`
+  → `"bonono"`), matching Python's `str.replace` rather than JavaScript's
+  single-match `String.prototype.replace`.
+- `substring(text, start[, end])` is JS-`slice`-style (end exclusive,
+  optional); an out-of-range or inverted `[start, end)` raises the new
+  **P029 (String index out of range)**.
+- `split()`/`reverseText()`/`substring()` all operate on Unicode code
+  points (`Array.from(text)`), not raw UTF-16 code units — an astral
+  character (e.g. an emoji outside the Basic Multilingual Plane, stored
+  as a UTF-16 surrogate pair) reverses or slices as one character, not
+  two broken halves.
+
+### 32.3 Array Library
+
+New: `clear()`, `length()`, `isEmpty()`. `push()`/`pop()`/`insert()`/
+`remove()`/`sort()`/`reverse()`/`contains()` are Phase 9 and unchanged;
+`indexOf()` is documented in §32.2 (its String half) alongside its Array
+half.
+
+- `length()` is a **second registered name** for the exact same
+  implementation as `len()` (String or Array) — not a reimplementation —
+  continuing Phase 9's own precedent of one function serving two names
+  for the same concept.
+- `isEmpty()` is polymorphic (§32.4): an Array is empty when it has zero
+  elements; any other value is "empty" only when its *type* is actually
+  Empty (`empty`) — a Number `0`, an empty String `""`, and `false` are
+  all real, non-Empty values, so none of them are "empty."
+- `clear()` empties an array in place (mutates, matching `push()`/
+  `pop()`/`sort()`/`reverse()`'s existing mutate-in-place convention) and
+  returns it.
+
+### 32.4 Type Library
+
+New: `boolean()`, `isNumber()`, `isText()`, `isBoolean()`, `isEmpty()`
+(documented once, in §32.3, rather than twice). `number()`/`text()`/
+`type()` are Phase 6 and unchanged.
+
+`boolean(value)` converts: a Boolean passes through; `empty` is always
+`false`; a Number/Decimal is `false` only for exactly `0`; a String must
+be exactly `"true"`/`"false"` (any letter case, surrounding whitespace
+trimmed) or it raises **P006 (Runtime conversion error)** — the same code
+`number()` already uses for "this text isn't a valid number," extended to
+"this text isn't a valid boolean" rather than inventing a new code for
+the same *kind* of failure.
+
+### 32.5 File Library — not yet implemented
+
+Deferred to sub-phase 13b (§32 table above). Not started.
+
+### 32.6 JSON Library — not yet implemented
+
+Deferred to sub-phase 13c. Not started.
+
+### 32.7 HTTP Library — not yet implemented
+
+Deferred to sub-phase 13e, deliberately last — see §32.10.
+
+### 32.8 Date & Time Library — not yet implemented
+
+Deferred to sub-phase 13d. Not started. Whatever representation it lands
+on cannot be a new static type (`DataType` — §14.4 — is one of the
+modules this phase must not modify): a Number (epoch milliseconds) or a
+formatted String are the two representations compatible with the
+existing type system without extending it.
+
+### 32.9 System Library
+
+New: `sleep()`, `version()`, `platform()`, `workingDirectory()`,
+`arguments()`.
+
+- **`stop()` from the original brief is deliberately not implemented.**
+  `stop` is already a reserved keyword with its own statement grammar
+  (`stop [code]`, Phase 8, §15.7) that terminates the program immediately
+  from anywhere — a same-named callable expression is not reachable
+  without a parser/grammar change, which this phase does not make (the
+  Parser is one of the modules Phase 13 must not modify). The existing
+  statement already covers this System Library entry.
+- `sleep(milliseconds)` blocks the calling thread for real, synchronous
+  time via `Atomics.wait` on a throwaway `SharedArrayBuffer(4)`. Unlike a
+  browser main thread, Node.js does not forbid a blocking `Atomics.wait`
+  call on its own main thread — this needed no worker thread, no new
+  dependency, and no change to the Interpreter/VM's fully synchronous
+  execution model, which is exactly why it was safe to add in 13a rather
+  than waiting for the concurrency work HTTP will eventually need (§32.10).
+- `version()`/`platform()` reuse `src/cli/version-info.js`'s existing
+  `LANGUAGE_VERSION`/`COMPILER_VERSION`/`platformInfo()` — the same values
+  `pari --version` already prints (§19) — rather than a second source of
+  truth.
+- `arguments()` returns the extra words after the source file on the
+  command line (`pari script.pr foo bar` → `arguments()` is
+  `box("foo", "bar")`) — previously silently discarded by `parseArgs()`.
+  `src/cli/args.js` now captures them as `programArgs`, and
+  `runCli()` stores them once per process (`src/stdlib/system/program-args.js`)
+  before any mode can execute Parithi code — a small, additive CLI change
+  (CLI is not one of Phase 13's protected modules), not a VM/Interpreter
+  change, and harmless for every other flag.
+
+### 32.10 Why HTTP Ships Last
+
+The original brief asks for `get()`/`post()`/`put()`/`delete()`/
+`download()` to behave like ordinary, blocking function calls — call it,
+get a response back, keep executing. Parithi has no `async`/`await`,
+Promises, or any concurrency primitive anywhere in its language, AST,
+Interpreter, or VM (by design — §12–§17 describe a fully synchronous
+language), and this phase is not permitted to add one. Node.js itself has
+no *built-in* synchronous network client — `fetch()` is Promise-based —
+and this project has maintained **zero runtime dependencies** since v1.0
+(README, `package.json`). Making `get()` truly block therefore needs one
+of: a `worker_threads` + `Atomics.wait` bridge (dependency-free, but a
+real, first-of-its-kind piece of machinery for this codebase), shelling
+out to `curl` via `child_process` (simple, but fragile — depends on
+`curl` being installed, weaker control over headers/timeout/JSON body),
+or a real dependency (breaks the zero-dependency claim). None of these
+is a small addition, which is exactly why HTTP is sequenced last (13e) —
+every synchronous, dependency-free library ships and is fully verified
+first, and the one library requiring a genuine architecture decision is
+tackled in isolation rather than risking the whole phase on its hardest
+part.
+
+### 32.11 Error Codes
+
+Two new codes, continuing the existing sequence:
+
+| Code | Name | Raised by |
+|---|---|---|
+| P028 | Math domain error | `sqrt()` of a negative number; `log()` of zero or a negative number; `randomInt()` with its upper bound below its lower bound |
+| P029 | String index out of range | `substring()` with an out-of-range or inverted `[start, end)` |
+
+`boolean()`'s unconvertible-String case reuses **P006** (Runtime
+conversion error, the same code `number()` already uses); every
+wrong-type argument across every new built-in reuses **P002** (Type
+mismatch), exactly like every Phase 6/9 built-in before it.
+
+### 32.12 Testing Summary
+
+`tests/math.test.js` (16 tests), `tests/string.test.js` (18 tests),
+`tests/array.test.js` (9 tests), `tests/stdlib.test.js` (17 tests —
+Type/System libraries plus an Interpreter-vs-PVM parity sweep across
+every new built-in in every category, the same method §30.11/§31.10
+already use), plus 5 new `tests/e2e.test.js` cases for the new
+`examples/stdlib/` programs and 2 new `tests/foundation.test.js` cases
+for the error-code count and `arguments()` CLI parsing. Total: **761
+tests** (695 pre-Phase-13 + 66 new), all passing, zero regressions, with
+every protected module (Lexer, Parser, AST, Semantic Analyzer *logic*,
+Bytecode, VM, Optimizer) verified unchanged.
+
+### 32.13 CLI
+
+No new flags this sub-phase — every new built-in is called the same way
+any existing one is (`sqrt(25)`, `upper(text)`, etc.), through the exact
+same `pari <file.pr>` / `pari --run-bytecode <file>` paths documented in
+§19/§30.7/§31.9. The only CLI-visible change is `arguments()`'s
+extra-word capture (§32.9), which is backward compatible: those words
+were previously parsed and silently ignored, never rejected, so no
+existing invocation's behavior changes.
+
+### 32.14 Examples
+
+`examples/stdlib/calculator.pr`, `random-number-generator.pr`,
+`array-demo.pr`, `string-utilities.pr` — one per library covered so far,
+following the existing `examples/` convention (§10) of a short,
+runnable demonstration per feature area.
+
+---
+
+## 33. Native Compiler (Phase 13, x86-64 Backend)
+
+**Status: a genuine, real, working foundation — not full-language native
+compilation.** This section documents exactly what exists, proven by
+actually executing generated `.exe` files on real Windows, not what the
+architecture is eventually meant to support. See §33.9 for the honest
+supported/unsupported boundary.
+
+### 33.1 Overview and Scope
+
+Phase 13 adds a **third execution backend** alongside the Tree-Walking
+Interpreter (default) and the Bytecode Generator/PVM (§29/§30/§31) —
+none of which this phase modifies. Where the bytecode path is
+`AST → Bytecode → PVM` (a portable, Parithi-defined instruction set
+interpreted by `src/vm/`), the native path is `AST → Native IR → x86-64
+machine code → a real Windows PE32+ .exe`, executed directly by the CPU
+with no Parithi runtime, no Node.js, and no `pari` process involved at
+all once compiled:
+
+```
+                                                    ┌─→ Tree-Walking Interpreter ─────────────────────────┐
+Source (.pr) → Lexer → Parser → AST → Semantic Analyzer ─┤                                                        ├─→ Output
+                                                    ├─→ Bytecode Generator → [Optimizer] → PVM ─────────────┤
+                                                    └─→ Native IR → x86-64 Backend → PE .exe → Windows CPU ─┘
+```
+
+Reached via `pari --native <file.pr>` (§33.10). Every stage before "Native
+IR" — Lexer, Parser, AST, Semantic Analyzer — is the exact same,
+unmodified frontend every other backend already uses (§30.2's "reuse, not
+reimplement" principle, continued): `src/native/native-compiler.js`
+calls the identical `Lexer`/`Parser`/`SemanticAnalyzer` classes
+`src/cli/commands.js` already uses for every other mode.
+
+### 33.2 Why No Assembler or Linker Is Used
+
+This machine has no C compiler, assembler, or linker available at all
+(checked directly: no gcc, clang, nasm, MSVC `cl`/`ml64`/`link`, MinGW, or
+LLVM). Every real compiler (GCC, Clang, Rust, Go) normally emits assembly
+or an object file and hands the actual executable-format bytes to a
+battle-tested external assembler/linker — that option does not exist
+here. Every byte of every PE header, section, import table, and x86-64
+instruction in this backend is therefore produced directly by
+hand-written JavaScript in `src/native/`, following the Microsoft
+PE/COFF Specification and the Intel 64 and IA-32 Architectures Software
+Developer's Manual directly — not approximated, and verified by actually
+executing the result on this real Windows machine at every step (§33.8).
+
+### 33.3 Architecture
+
+```
+src/native/
+├── native-compiler.js          orchestrator: Lexer/Parser/SemanticAnalyzer (unmodified) → codegen → PE writer
+├── errors.js                   NativeCompileError (P030) — same CompilerError.format() shape as every other diagnostic
+├── codegen/
+│   ├── native-codegen.js       AST (supported subset only) → Native IR → x86-64 instructions + PE fixup metadata
+│   └── x86-64-encoder.js       hand-encoded x86-64 instructions (documented byte-for-byte against the Intel manual)
+└── pe/
+    ├── pe-writer.js            assembles the complete PE32+ file: headers, sections, two-pass fixup patching
+    └── rdata-builder.js        builds the import table (Import Directory/IAT/Hint-Name) + string constant data
+```
+
+Deliberately leaner than a suggested `src/native/native-ir/`,
+`codegen/registers.js`, `codegen/calling-convention.js`,
+`linker/linker.js`, `runtime/native-runtime.js` split: the "Native IR" for
+the currently-supported subset is small enough (`Say(text)` /
+`Exit(code)` — §33.4) that a separate IR module/class hierarchy would be
+pure ceremony over two node shapes; register constants and the calling
+convention are documented as comments directly in the encoder/codegen
+files that embody them (§33.5/§33.6), where they're actually load-bearing;
+there is no separate object-file-then-link step (the PE writer produces
+the final executable directly), so no `linker/` module exists yet. This
+will be revisited if/when control flow and functions genuinely need a
+richer IR (§33.11's recommended next steps) — not before, per the
+project's "no premature abstraction" convention.
+
+### 33.4 Native IR
+
+The intermediate representation between the AST and the x86-64 backend,
+today, is exactly two operation kinds (see `compileProgramToNative()`'s
+own `ir` output, inspectable via `pari --native --ir`, §33.10):
+
+| IR operation | Meaning | Compiles to |
+|---|---|---|
+| `Say(text)` | Print `text` followed by a newline | `GetStdHandle` (once, cached in RSI) + one `WriteFile` call per `Say` |
+| `Exit(code)` | Terminate the process with `code` | One `ExitProcess` call |
+
+Every Parithi program that compiles natively today is exactly a sequence
+of `Say` operations followed by one implicit trailing `Exit(0)` (a
+program that runs to completion without an explicit `stop` always exits
+0, matching the Interpreter/PVM — §15.7). This is intentionally the
+smallest possible real IR, not a placeholder: it already has the
+property the brief asks for ("design the IR so another CPU backend could
+theoretically be added later") — an ARM64 backend would consume the
+exact same `{ir: ['Say(...)', 'Exit(0)']}` shape and only need its own
+codegen module, none of `native-codegen.js`'s AST-walking/validation
+logic.
+
+**Growing the IR (recommended for the next phase, not started now):**
+adding variables/arithmetic/control flow will need genuine IR node types
+for `Const`, `Load`/`Store`, `BinaryOp`, `Label`, `Jump`/`JumpIfFalse`,
+`Call`/`Return` (the brief's own §4 list) — at that point, factoring a
+real `native-ir/` module (separate from `native-codegen.js`'s AST walk)
+becomes justified, since there will be enough IR node variety for a
+walker to meaningfully operate over instead of two hardcoded cases.
+
+### 33.5 x86-64 Code Generation
+
+`src/native/codegen/x86-64-encoder.js` hand-encodes exactly the
+instructions the current subset needs — documented, not a general-purpose
+assembler (extend it with new, individually-documented functions as more
+IR operations are added, per its own class doc):
+
+| Instruction | Encoding | Used for |
+|---|---|---|
+| `mov r64, imm64` | REX.W + (B8+r) + imm64 | Loading an absolute address (IAT slot, string data) — safe because the image has a fixed base and no relocations (§33.7) |
+| `mov r32, imm32` | (REX.B?) + (B8+r) + imm32 | Small integer constants (exit codes, string lengths, `STD_OUTPUT_HANDLE`) |
+| `mov r64, r64` | REX.W + 0x89 /r | Register-to-register moves (e.g. saving a return value) |
+| `lea r64, [rsp+disp8]` | REX.W + 0x8D /r + SIB + disp8 | Computing the address of a stack-local scratch slot |
+| `mov qword [rsp+disp8], imm32` | REX.W + 0xC7 /0 + SIB + disp8 + imm32 | Zeroing a stack-passed argument (e.g. `WriteFile`'s unused `lpOverlapped`) |
+| `call [reg]` | 0xFF /2 (+REX.B) | Calling an imported Windows API function through its IAT slot |
+| `sub`/`add rsp, imm8` | REX.W + 0x83 /5 or /0 | Stack frame allocation/deallocation |
+
+**General-purpose registers used:** RCX/RDX/R8/R9 (argument passing,
+per convention below), RAX (return values, scratch), RSI (callee-saved —
+holds the console handle across calls that would otherwise clobber it).
+
+**Calling convention: the standard Microsoft x64 calling convention** (not
+invented) — RCX/RDX/R8/R9 for the first four integer/pointer arguments,
+arguments 5+ on the stack at `[rsp+32]`/`[rsp+40]`/..., 32 bytes of
+caller-reserved "shadow space" before every call, RSP 16-byte aligned
+immediately before every `call`, RAX for return values, RBX/RBP/RDI/RSI/
+R12-R15 callee-saved.
+
+**Stack layout for the program's entry-point "function"** (documented in
+full in `native-codegen.js`'s own class doc): the OS transfers control to
+the entry point exactly as if via a `call`, so RSP ≡ 8 (mod 16) there —
+the standard x64 entry convention. `sub rsp, 0x38` (56 ≡ 8 mod 16)
+restores 16-byte alignment for every subsequent call. That 56-byte frame:
+`[rsp+0..31]` shadow space, `[rsp+32..39]` a 5th-argument slot (used by
+`WriteFile`'s `lpOverlapped=NULL`), `[rsp+40..47]` scratch for
+`WriteFile`'s `lpNumberOfBytesWritten` out-parameter, `[rsp+48..55]`
+padding. **Function prologue/epilogue** (for user-defined `task`s) and a
+**local-variable stack layout** don't exist yet — there are no
+user-defined functions or local variables in the compiled subset (§33.9);
+this is explicitly future work, not an oversight.
+
+**External/runtime calls** go through the PE Import Address Table (§33.7)
+— `KERNEL32.DLL`'s `GetStdHandle`, `WriteFile`, `ExitProcess` today; no
+other native runtime dependency exists.
+
+### 33.6 Data Representation
+
+Only two Parithi runtime concepts are represented natively today:
+
+- **String literals** — raw UTF-8 bytes (Parithi source is already
+  read as UTF-8 — §1) placed in `.rdata`, with an explicit byte length
+  passed to `WriteFile` (no null terminator, no length-prefix — matching
+  how `WriteFile`'s own signature works, not a Parithi convention).
+- **A process exit code** — a 32-bit integer, passed directly to
+  `ExitProcess` in ECX; no boxing, no runtime type tag.
+
+**Not yet represented (future work, §33.11):** Number, Decimal, Boolean,
+Empty, Array. Deciding their native representation (integer width,
+tagged-union vs. separate typed storage, memory ownership/allocation for
+Arrays) is real design work deliberately deferred rather than guessed at
+now — see §33.11's recommended next steps for where that decision belongs.
+**Runtime type information** doesn't exist natively at all yet (there is
+no equivalent of `RuntimeValue`/`type()` in compiled code) since every
+value the current subset handles (a string literal, a hardcoded exit
+code) has a statically-known, single representation with nothing to tag.
+**No dynamic memory allocation happens** in a compiled program today (no
+heap, no `VirtualAlloc`/`HeapAlloc` calls) — every value is either a
+compile-time constant embedded in `.rdata` or a fixed stack slot.
+
+### 33.7 Executable Generation (PE32+ Writer)
+
+`src/native/pe/pe-writer.js` builds a complete, standalone Windows
+executable — no template, no stub linked from elsewhere. Key decisions,
+each chosen for correctness first (verified against this machine's real
+loader, §33.8), not convenience:
+
+- **Fixed image base (`0x140000000`), no ASLR.**
+  `IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE` is deliberately NOT set, so
+  Windows always loads the image at the same address. This means every
+  absolute address the compiled code needs (an IAT slot, a string's
+  location) is a **link-time constant** — the codegen bakes them in as
+  plain 64-bit immediates, with no base-relocation table (`.reloc`)
+  needed. A correct simplification for a first backend, not a shortcut
+  that produces wrong results.
+- **Two sections**: `.text` (code; executable+readable) and `.rdata`
+  (import table + string constants; readable **and** writable — writable
+  because the Windows loader patches the IAT's slots with real function
+  addresses at process start).
+- **Two-pass fixup patching**, because of a genuine chicken-and-egg
+  problem: the machine code needs the absolute address of the import
+  table/strings, but `.rdata`'s address depends on `.text`'s final size,
+  which isn't known until codegen finishes. Pass 1 generates `.text` with
+  placeholder zero immediates, recording each one's byte offset. Once
+  `.rdata`'s size (and therefore its RVA) is known, pass 2 patches every
+  recorded offset with the real absolute address. `.rdata` has an
+  analogous **second**, internal fixup pass of its own: the Import
+  Directory Table's `Name`/`FirstThunk` fields and every IAT entry point
+  at *other locations inside `.rdata` itself*, which also aren't real
+  RVAs until `.rdata`'s own address is known — `rdata-builder.js` records
+  these as `internalFixups`, patched by `pe-writer.js` right alongside
+  `.text`'s own fixups. **This exact bug (forgetting the second pass) was
+  caught by actually executing a generated `.exe`**: the file loaded
+  (proving the PE format itself was fine) but crashed with
+  `STATUS_ACCESS_VIOLATION (0xC0000005)`, because the Import Directory's
+  `Name`/`FirstThunk` fields held small local offsets instead of real
+  RVAs — a concrete demonstration of why §33.8's "actually run it" rule
+  matters more than "the bytes look plausible."
+- **Import table without a separate ILT**: each `IMAGE_IMPORT_DESCRIPTOR`'s
+  `OriginalFirstThunk` is 0 — a documented, valid PE simplification where
+  the loader uses `FirstThunk` (the IAT) for both name-based binding and,
+  after binding, as the actual runtime address table.
+
+### 33.8 Testing — Real Execution, Not Just "It Compiled"
+
+`tests/native/native-compiler.test.js` (37 tests) never stops at "the
+compiler produced bytes." Every success-path test **writes a real `.exe`
+to disk and executes it** (`spawnSync`), asserting on genuinely-observed
+stdout and exit code — the only way to actually prove hand-rolled PE and
+x86-64 bytes work on real Windows:
+
+- Hello World, multi-`say`, multi-value `say`, empty strings, a 250-byte
+  string, 50 sequential `say` statements, and a program with no `say`
+  statements at all — each compiled, written, executed, and checked.
+- **PE structural correctness** — DOS/PE/COFF/Optional header fields
+  read back and checked directly against expected values.
+- **16 unsupported-feature cases** (variables, constants, arithmetic,
+  comparison, boolean logic, `if`/`while`/`repeat`/`choose`, functions,
+  `stop`, non-literal/non-String `say` arguments, arrays) — each asserted
+  to fail with exactly `P030`, never a crash, never a silently-wrong `.exe`.
+  Lexical/semantic errors reaching `compileNative()` are asserted to keep
+  their *own* codes (P009/P001/etc.), not get relabeled P030.
+- **Cross-backend parity** — every currently-native-supported program run
+  through the Interpreter, the PVM, and a real executed native `.exe`,
+  asserting identical stdout and exit code across all three (§33.1's own
+  requirement, satisfied for the current subset).
+- **`--ir`/`--asm` output** — asserted non-empty and structurally sane.
+- **Unit-level PE/rdata correctness** — offset bookkeeping, a hand-built
+  minimal `ExitProcess(7)`-only program (proving the import
+  table/calling-convention mechanism independent of any string handling —
+  this was literally how the access-violation bug above was isolated;
+  see §33.7's own account), and a defensive check that a fixup referencing
+  an unregistered import throws a clear internal error rather than
+  silently producing a broken `.exe`.
+
+`examples/native/hello.pr` and `strings.pr` are the two golden programs
+that genuinely compile — deliberately not a full `variables.pr`/
+`loops.pr`/`functions.pr`/etc. set (as an earlier draft of this brief
+requested), since creating example files for constructs the backend can't
+actually compile would misleadingly imply support that doesn't exist; the
+16 unsupported-feature tests above cover those constructs' *diagnostic*
+path instead, with inline source strings.
+
+**Regression baseline:** 765 tests passing immediately before this phase;
+**802 tests passing after** (765 + 37 new native tests), zero regressions
+— every existing Lexer/Parser/AST/Semantic Analyzer/Interpreter/Bytecode/
+PVM/Optimizer/Standard-Library test still passes unchanged, confirming
+none of those modules were touched.
+
+### 33.9 Supported vs. Unsupported Features (Native-Support Matrix)
+
+**Supported today**, each proven by a passing execution test (§33.8):
+
+| Feature | Native support |
+|---|---|
+| `say` with one or more String literal arguments (multi-value, space-joined) | ✅ Yes |
+| Empty-string / empty-program edge cases | ✅ Yes |
+| Implicit exit code 0 on normal completion | ✅ Yes |
+
+**Not yet supported** — every one of these raises a clean `P030`
+diagnostic (feature name, source location, reason, a suggested
+alternative), never a crash or a silently-wrong `.exe` (§33.8's 16 test
+cases): Number/Decimal/Boolean/Empty literals passed to `say`; variables
+(`hold`/`const`) and any read of one; arithmetic/comparison/logical
+operators; `if`/`else`, `choose`, `while`, `repeat`, `break`, `continue`;
+`task` declarations, calls, `return`, recursion; `stop`; Arrays (`box`);
+every Standard Library built-in (§32). This is the honest, current
+boundary — not a roadmap promise stated as if already true.
+
+**Built-in function native-support matrix** — every built-in currently
+raises `P030` (none are natively supported yet, since native codegen has
+no runtime call convention for them defined — that's real design work,
+not a gap that can be "just" implemented per-function):
+
+| Built-in | Native support | Built-in | Native support |
+|---|---|---|---|
+| `len()` | ❌ No | `round()` | ❌ No |
+| `number()` | ❌ No | `sqrt()` | ❌ No |
+| `text()` | ❌ No | `abs()` | ❌ No |
+| `type()` | ❌ No | *(every other §16.5/§28.5/§32 built-in)* | ❌ No |
+
+### 33.10 CLI
+
+```
+pari --native <file.pr>              Compile to a .exe next to the source
+pari --native <file.pr> -o <path>    Compile to <path> instead
+pari --native <file.pr> --ir         Also print the Native IR (Say(...)/Exit(...) list)
+pari --native <file.pr> --asm        Also print the generated x86-64 (offset, hex bytes, mnemonic)
+```
+
+`-o`/`--ir`/`--asm` compose freely with each other and with `--native`,
+following the exact modifier-flag convention `--verbose`/`--optimize`
+already established (§31.9) — `--ir`/`--asm` are opt-in inspection only,
+never the default output (per the brief's own §14: "do not expose
+unstable internal details as the default user experience"). Every
+existing command (`pari <file.pr>`, `--tokens`, `--ast`, `--analyze`,
+`--runtime`, `--bytecode`, `--compile`, `--run-bytecode`, `--stats`,
+`--disassemble`, `--version`, `--help`) is completely unaffected — `pari
+--help` lists `--native` alongside them.
+
+### 33.11 Error Codes
+
+One new code, continuing the existing sequence:
+
+| Code | Name | Phase | Raised by |
+|---|---|---|---|
+| P030 | Unsupported native compilation feature | Native Compilation (new `ErrorPhase`) | Any AST node or `say` argument the x86-64 backend doesn't compile yet (§33.9) |
+
+Formatted identically to every other Parithi diagnostic (`NativeCompileError`
+extends the same `CompilerError` used by the Lexer/Parser — §18): code,
+message, `file:line:column`, and a hint (here, always a suggested
+alternative — e.g. "use `pari --run-bytecode`/`pari <file.pr>` for
+full-language support").
+
+### 33.12 Performance
+
+`benchmarks/native-benchmark.mjs` measures the **one** workload
+genuinely comparable across all three backends today — Hello World (see
+§33.9: nothing CPU-bound like a loop or recursion is supported yet, so
+benchmarking those would be meaningless). Measured on the machine this
+phase was built on, median of 10 runs each as a real OS process:
+
+| Backend | Median wall-clock time |
+|---|---|
+| Tree-Walking Interpreter (`node bin/pari.js hello.pr`) | ~323 ms |
+| PVM (`node bin/pari.js --run-bytecode hello.pr`) | ~320 ms |
+| Native `.exe` (directly, no Node.js) | ~20 ms |
+
+**Honest interpretation, not an oversold headline:** native is ~16x
+faster here almost entirely because the Interpreter/PVM numbers include a
+full Node.js process startup (module loading, V8 initialization) on every
+run, which a native `.exe` has no equivalent of — this is **not yet**
+evidence that native-compiled *code* executes faster than interpreted/
+bytecode execution for the same workload. Proving that requires a
+CPU-bound benchmark (a large loop, recursion) that isn't supported by the
+native backend yet (§33.9) — recorded honestly rather than claimed
+prematurely, per the brief's own explicit instruction ("Do NOT claim
+native is faster until measured").
+
+### 33.13 Known Limitations
+
+- **Windows x86-64 only.** No Linux/macOS/ARM64 target exists or was
+  attempted — explicitly out of scope for this phase, per the brief.
+- **Only `say` with String literals compiles natively** — see §33.9's
+  full matrix. This is the single most important limitation to state
+  plainly: this is a real, working *foundation*, not full native
+  compilation of the language.
+- **No native runtime for anything beyond console output and process
+  exit** — no string formatting/concatenation, no arithmetic, no memory
+  allocator, no error-handling runtime (a native program cannot yet raise
+  a Parithi runtime error like P020/P024 — every condition that would
+  cause one is currently caught earlier, at native-*compile* time, as an
+  unsupported-feature diagnostic instead, since the constructs that could
+  cause a runtime error aren't compilable yet either).
+- **No native optimizer.** The Phase 12 Bytecode Optimizer (§31) operates
+  on Bytecode, not native machine code; `--optimize` has no defined
+  meaning combined with `--native` yet and is currently a silent no-op
+  there, consistent with how every CLI mode silently ignores flags
+  irrelevant to it.
+
+### 33.14 Recommended Next Phase
+
+In the order that keeps each step's own IR/codegen additions small and
+independently testable (matching this phase's own "only mark a feature
+native-supported after it has dedicated tests" rule):
+
+1. **Variables and arithmetic** — requires a real `Const`/`Load`/`Store`/
+   `BinaryOp` IR (§33.4's "growing the IR" note), a decided Number/Decimal
+   representation (§33.6), and local-variable stack slots (extending
+   §33.5's stack-frame design, which currently has none).
+2. **Control flow** (`if`/`while`/`repeat`/`break`/`continue`) — needs
+   `Label`/`Jump`/`JumpIfFalse` IR and conditional-jump encodings
+   (`Jcc`) in `x86-64-encoder.js`.
+3. **Functions and recursion** — a real call stack discipline for
+   user-defined `task`s (prologue/epilogue, parameter passing beyond the
+   four fixed native-runtime calls that exist today, a return-value
+   convention) — the brief's own worked example (`fact(5)` → `120`) is a
+   good acceptance test for this step specifically.
+4. **String operations, Arrays, and the Standard Library** — each needs
+   its own native-runtime design (§33.6/§33.9's built-in matrix) once a
+   real memory model (allocation/ownership) exists, which items 1-3 don't
+   yet require.
+
+Not recommended before the above: broadening OS/CPU target support
+(§33.13) — every additional target multiplies the PE-writer-equivalent
+and encoder-equivalent work for a language subset that still can't do
+arithmetic natively.

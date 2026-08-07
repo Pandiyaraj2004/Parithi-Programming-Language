@@ -297,7 +297,6 @@ export class TypeChecker {
       case 'remove':
       case 'sort':
       case 'reverse':
-      case 'contains':
         this.checkArrayArgument(name, argTypes[0], node.arguments[0]);
         if ((name === 'insert' || name === 'remove') && argTypes[1] !== DataType.UNKNOWN && !isNumeric(argTypes[1])) {
           this.report(
@@ -308,8 +307,106 @@ export class TypeChecker {
           );
         }
         break;
+      case 'clear':
+        this.checkArrayArgument(name, argTypes[0], node.arguments[0]);
+        break;
+      case 'length':
+        if (argTypes[0] !== DataType.UNKNOWN && argTypes[0] !== DataType.STRING && argTypes[0] !== DataType.ARRAY) {
+          this.report(
+            'P002',
+            `"length()" expects a String or Array argument, got ${argTypes[0]}.`,
+            node.arguments[0],
+            '"length()" only accepts a String or an Array (created with "box(...)").',
+          );
+        }
+        break;
+      case 'contains':
+      case 'indexOf':
+        // Polymorphic (String or Array, §32.2/§32.3) — the actual first-vs-second-argument-type
+        // agreement (a String needle for a String haystack, any element for an Array) can only be
+        // checked once real values exist (interpreter/builtins), exactly like every other
+        // Unknown-typed defensive check in this codebase.
+        if (argTypes[0] !== DataType.UNKNOWN && argTypes[0] !== DataType.STRING && argTypes[0] !== DataType.ARRAY) {
+          this.report(
+            'P002',
+            `"${name}()" expects a String or Array argument, got ${argTypes[0]}.`,
+            node.arguments[0],
+            `"${name}()" only accepts a String or an Array (created with "box(...)").`,
+          );
+        }
+        break;
+      case 'sqrt':
+      case 'abs':
+      case 'floor':
+      case 'ceil':
+      case 'sin':
+      case 'cos':
+      case 'tan':
+      case 'log':
+      case 'exp':
+      case 'sleep':
+        this.checkNumericArgument(name, argTypes[0], node.arguments[0]);
+        break;
+      case 'pow':
+      case 'randomInt':
+        argTypes.forEach((type, i) => this.checkNumericArgument(name, type, node.arguments[i]));
+        break;
+      case 'min':
+      case 'max':
+        argTypes.forEach((type, i) => this.checkNumericArgument(name, type, node.arguments[i]));
+        break;
+      case 'upper':
+      case 'lower':
+      case 'trim':
+      case 'reverseText':
+        this.checkStringArgument(name, argTypes[0], node.arguments[0]);
+        break;
+      case 'split':
+      case 'startsWith':
+      case 'endsWith':
+      case 'lastIndexOf':
+        argTypes.forEach((type, i) => this.checkStringArgument(name, type, node.arguments[i]));
+        break;
+      case 'replace':
+        argTypes.forEach((type, i) => this.checkStringArgument(name, type, node.arguments[i]));
+        break;
+      case 'repeatText':
+        this.checkStringArgument(name, argTypes[0], node.arguments[0]);
+        if (argTypes[1] !== DataType.UNKNOWN && !isNumeric(argTypes[1])) {
+          this.report(
+            'P002',
+            `"repeatText()"'s count argument must be numeric, got ${argTypes[1]}.`,
+            node.arguments[1],
+            '"repeatText()" expects a Number/Decimal count as its second argument.',
+          );
+        }
+        break;
+      case 'substring':
+        this.checkStringArgument(name, argTypes[0], node.arguments[0]);
+        argTypes.slice(1).forEach((type, i) => {
+          if (type !== DataType.UNKNOWN && !isNumeric(type)) {
+            this.report(
+              'P002',
+              `"substring()"'s index argument must be numeric, got ${type}.`,
+              node.arguments[i + 1],
+              '"substring()" expects Number/Decimal start/end indices.',
+            );
+          }
+        });
+        break;
+      case 'join':
+        if (argTypes[0] !== DataType.UNKNOWN && argTypes[0] !== DataType.ARRAY) {
+          this.report(
+            'P002',
+            `"join()" expects an Array argument, got ${argTypes[0]}.`,
+            node.arguments[0],
+            '"join()" only accepts an Array (created with "box(...)").',
+          );
+        }
+        this.checkStringArgument(name, argTypes[1], node.arguments[1]);
+        break;
       default:
-        break; // text(), type() accept any value type — no check
+        break; // text(), type(), boolean(), isNumber()/isText()/isBoolean()/isEmpty(), version()/platform()/workingDirectory()/arguments() accept any value type (or take none) — no check
     }
 
     return signature.returnType(count);
@@ -323,6 +420,30 @@ export class TypeChecker {
         `"${name}()" expects an Array argument, got ${argType}.`,
         node,
         `"${name}()" only accepts an Array (created with "box(...)").`,
+      );
+    }
+  }
+
+  /** Shared by Math stdlib built-ins (Phase 13, §32.1) — Unknown always passes, checked again defensively at runtime. */
+  checkNumericArgument(name, argType, node) {
+    if (argType !== DataType.UNKNOWN && !isNumeric(argType)) {
+      this.report(
+        'P002',
+        `"${name}()" expects a numeric argument, got ${argType}.`,
+        node,
+        `"${name}()" only accepts Number/Decimal arguments.`,
+      );
+    }
+  }
+
+  /** Shared by String stdlib built-ins (Phase 13, §32.2) — Unknown always passes, checked again defensively at runtime. */
+  checkStringArgument(name, argType, node) {
+    if (argType !== DataType.UNKNOWN && argType !== DataType.STRING) {
+      this.report(
+        'P002',
+        `"${name}()" expects a String argument, got ${argType}.`,
+        node,
+        `"${name}()" only accepts a String argument.`,
       );
     }
   }

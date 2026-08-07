@@ -1,0 +1,25 @@
+# Standard Library — String (MASTER_DOCUMENT.md §32.2)
+# len() is Phase 6/9 and already shown elsewhere — every function below is
+# new in Phase 13.
+
+hold greeting = "  Hello, Parithi!  "
+
+say "Original:", greeting
+say "trim():", trim(greeting)
+say "upper():", upper(trim(greeting))
+say "lower():", lower(trim(greeting))
+say "reverseText():", reverseText("Parithi")
+
+hold sentence = "the quick brown fox"
+hold words = split(sentence, " ")
+say "split():", words
+say "join() with '-':", join(words, "-")
+
+say "replace():", replace("banana", "a", "o")
+say "startsWith('the'):", startsWith(sentence, "the")
+say "endsWith('fox'):", endsWith(sentence, "fox")
+say "substring(4, 9):", substring(sentence, 4, 9)
+say "indexOf('brown'):", indexOf(sentence, "brown")
+say "lastIndexOf('o'):", lastIndexOf(sentence, "o")
+say "contains('quick'):", contains(sentence, "quick")
+say "repeatText('ab', 3):", repeatText("ab", 3)

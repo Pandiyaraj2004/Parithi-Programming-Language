@@ -12,8 +12,8 @@ import { parseArgs } from '../src/cli/args.js';
 import { CliUsageError } from '../src/cli/cli-error.js';
 import { isKeyword, KEYWORDS } from '../src/lexer/keywords.js';
 
-test('ERROR_CODES contains all twenty-seven documented codes (P001-P027)', () => {
-  assert.equal(Object.keys(ERROR_CODES).length, 27);
+test('ERROR_CODES contains all thirty documented codes (P001-P030)', () => {
+  assert.equal(Object.keys(ERROR_CODES).length, 30);
 });
 
 test('CompilerError formats with code, message, location, and hint', () => {
@@ -47,7 +47,14 @@ test('KEYWORDS contains exactly 26 reserved words, including choose/option/other
 });
 
 test('parseArgs treats a plain filename as run mode', () => {
-  assert.deepEqual(parseArgs(['hello.pr']), { mode: 'run', file: 'hello.pr', verbose: false });
+  assert.deepEqual(parseArgs(['hello.pr']), {
+    mode: 'run', file: 'hello.pr', verbose: false, optimize: false, asm: false, ir: false, outputPath: null, programArgs: [],
+  });
+});
+
+test('parseArgs captures trailing words as the program\'s own arguments() (Phase 13, §32.9)', () => {
+  assert.deepEqual(parseArgs(['hello.pr', 'foo', 'bar']).programArgs, ['foo', 'bar']);
+  assert.deepEqual(parseArgs(['--run-bytecode', 'hello.pr', 'foo']).programArgs, ['foo']);
 });
 
 test('parseArgs recognizes --version and --help', () => {

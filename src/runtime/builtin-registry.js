@@ -32,6 +32,7 @@ function isValidArgCount(entry, count) {
 
 function describeArgCount(entry) {
   if (entry.validCounts) return entry.validCounts.join(' or ');
+  if (entry.maxArgs === Infinity) return `${entry.minArgs} or more`;
   return entry.minArgs === entry.maxArgs ? `${entry.minArgs}` : `${entry.minArgs}-${entry.maxArgs}`;
 }
 

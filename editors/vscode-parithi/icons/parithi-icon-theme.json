@@ -1,0 +1,28 @@
+{
+  "hasFileIcons": true,
+  "hasFolderIcons": true,
+  "showLanguageModeIcons": false,
+  "iconDefinitions": {
+    "_file": {
+      "iconPath": "../images/generic-file.svg"
+    },
+    "_folder": {
+      "iconPath": "../images/generic-folder.svg"
+    },
+    "_folder_open": {
+      "iconPath": "../images/generic-folder-open.svg"
+    },
+    "parithi-file": {
+      "iconPath": "../images/parithi-file-icon.png"
+    }
+  },
+  "file": "_file",
+  "folder": "_folder",
+  "folderExpanded": "_folder_open",
+  "fileExtensions": {
+    "pr": "parithi-file"
+  },
+  "languageIds": {
+    "parithi": "parithi-file"
+  }
+}

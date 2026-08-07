@@ -1,0 +1,18 @@
+# Standard Library — Math (MASTER_DOCUMENT.md §32.1)
+# A calculator demonstrating the Phase 13 Math built-ins (round()/random()
+# are Phase 6 and already shown in examples/calculator.pr).
+
+hold a = 16
+hold b = 3
+
+say "sqrt(16):", sqrt(a)
+say "pow(16, 3):", pow(a, b)
+say "abs(-16):", abs(0 - a)
+say "floor(7.8):", floor(7.8)
+say "ceil(7.2):", ceil(7.2)
+say "min(16, 3):", min(a, b)
+say "max(16, 3):", max(a, b)
+say "log(1):", log(1)
+say "exp(0):", exp(0)
+say "sin(0):", sin(0)
+say "cos(0):", cos(0)

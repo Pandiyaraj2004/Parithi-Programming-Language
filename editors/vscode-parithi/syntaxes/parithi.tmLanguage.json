@@ -1,0 +1,156 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Parithi",
+  "scopeName": "source.parithi",
+  "fileTypes": ["pr"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#constants" },
+    { "include": "#keywords" },
+    { "include": "#readable-operators" },
+    { "include": "#function-declaration" },
+    { "include": "#builtin-functions" },
+    { "include": "#function-calls" },
+    { "include": "#operators" },
+    { "include": "#punctuation" },
+    { "include": "#variables" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.number-sign.parithi",
+          "match": "#.*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.parithi",
+          "match": "\"[^\"\\n]*\""
+        },
+        {
+          "comment": "An unterminated string (no closing quote before end of line) — Parithi strings cannot span lines.",
+          "name": "invalid.illegal.unterminated-string.parithi",
+          "match": "\"[^\"\\n]*$"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.decimal.parithi",
+          "match": "\\b\\d+\\.\\d+\\b"
+        },
+        {
+          "name": "constant.numeric.integer.parithi",
+          "match": "\\b\\d+\\b"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.parithi",
+          "match": "\\b(true|false)\\b"
+        },
+        {
+          "name": "constant.language.empty.parithi",
+          "match": "\\bempty\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "storage.modifier.parithi",
+          "match": "\\b(hold|const)\\b"
+        },
+        {
+          "name": "storage.type.function.parithi",
+          "match": "\\btask\\b"
+        },
+        {
+          "name": "keyword.control.parithi",
+          "match": "\\b(if|else|choose|option|other|end|repeat|while|break|continue|return|stop)\\b"
+        },
+        {
+          "name": "keyword.operator.logical.parithi",
+          "match": "\\b(and|or|not|is)\\b"
+        },
+        {
+          "name": "keyword.other.parithi",
+          "match": "\\b(as|box)\\b"
+        },
+        {
+          "name": "support.function.io.parithi",
+          "match": "\\b(say|ask)\\b"
+        }
+      ]
+    },
+    "readable-operators": {
+      "comment": "Not lexer keywords (they're plain identifiers per src/lexer/lexer.js), but part of Parithi's readable comparison syntax ('is at least', 'is more than') — highlighted for editor readability.",
+      "patterns": [
+        {
+          "name": "keyword.other.readable-comparison.parithi",
+          "match": "\\b(more|less|at|least|most|than)\\b"
+        }
+      ]
+    },
+    "function-declaration": {
+      "patterns": [
+        {
+          "match": "\\b(task)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "1": { "name": "storage.type.function.parithi" },
+            "2": { "name": "entity.name.function.parithi" }
+          }
+        }
+      ]
+    },
+    "builtin-functions": {
+      "comment": "Every built-in registered in src/interpreter/builtins/index.js (Phase 6/9/13a) — NOT lexer keywords, reserved at the semantic layer instead.",
+      "patterns": [
+        {
+          "name": "support.function.builtin.parithi",
+          "match": "\\b(round|random|number|text|type|len|push|pop|insert|remove|sort|reverse|contains|sqrt|pow|abs|floor|ceil|min|max|randomInt|sin|cos|tan|log|exp|upper|lower|trim|split|join|replace|startsWith|endsWith|substring|indexOf|lastIndexOf|repeatText|reverseText|clear|length|isEmpty|boolean|isNumber|isText|isBoolean|sleep|version|platform|workingDirectory|arguments)(?=\\s*\\()"
+        }
+      ]
+    },
+    "function-calls": {
+      "patterns": [
+        {
+          "name": "entity.name.function.parithi",
+          "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.parithi",
+          "match": "==|!=|>=|<=|\\*\\*|[+\\-*/%=<>]"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.parithi",
+          "match": "[()\\[\\],:.]"
+        }
+      ]
+    },
+    "variables": {
+      "patterns": [
+        {
+          "name": "variable.other.parithi",
+          "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+        }
+      ]
+    }
+  }
+}
