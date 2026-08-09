@@ -14,6 +14,114 @@ than each getting its own, which Keep a Changelog treats as one section
 per version) since none bumped `package.json`'s version — that's a
 release-cut decision no phase's brief has asked for yet.
 
+### Phase 18: Adaptive Execution Engine & Loop Model Validation
+
+Began from a brief asserting the Adaptive Execution Engine (§34) wasn't
+selecting/executing Native correctly, and asking for a full validation
+of the `repeat`/`while`/`loop` + `break`/`continue` loop model across all
+three backends. Both claims were checked against fresh, real execution
+rather than assumed. **Adaptive Execution Engine:** `pari hello.pr`,
+`--verbose`, `--explain-backend`, and all three `--backend` values were
+re-run live and confirmed to work exactly as designed — Native is
+selected first whenever it genuinely supports the program (confirmed via
+`examples/hello.pr`), Bytecode + PVM is the correct real fallback
+(confirmed via `examples/arrays.pr` and `examples/loops.pr`, both
+genuinely native-unsupported), forced `--backend` never silently falls
+back, and automatic selection never executes more than one backend (two
+new permanent regression tests assert the program's own output appears
+exactly once — never a partial-execution double-run). No bug was found;
+none was invented to justify a fix. **Loop model:** the brief's premise
+that Parithi has only one loop keyword (`repeat`) was checked against the
+actual keyword table and found incomplete — `while` and `loop` already
+exist as full, tested, backward-compatible loop constructs alongside
+`repeat` (added Phases 0 and 16 respectively) and were preserved
+unchanged, per this phase's own explicit "do not redesign the language"
+and "preserve constructs that already exist" rules. A 24-case live sweep
+(basic/nested/deeply-nested loops, break/continue at every nesting
+level, functions calling loops and loops calling functions, `return`/
+`stop` inside a loop, array iteration, boolean conditions) matched
+Interpreter and Bytecode + PVM exactly, and confirmed Native cleanly
+rejects every one of them (no loop construct has real x86-64 codegen —
+see §37.5's Native Feature Matrix). One genuine test-coverage gap was
+found and closed: the zero-iteration case (`repeat 0`) had no permanent
+regression test despite being a real, distinct edge case from "single
+iteration." `npm test` was 989/989 immediately before this phase;
+**992/992 passing after** (3 new regression tests: zero-iteration
+`repeat`, and two no-duplicate-execution checks), zero regressions.
+
+- **Confirmed, not changed:** `src/backend/capability.js`, `src/backend/selector.js`,
+  `src/cli/commands.js`'s `runWithBackend` — capability analysis already
+  happens fully before any backend executes; only ever one backend runs.
+- **Confirmed, not changed:** `repeat`/`while`/`loop`/`break`/`continue` —
+  no keyword removed, no syntax changed, no `for` construct exists or was
+  added anywhere in the implementation.
+- **Added:** `tests/backend/cli.test.js` — 2 new "exactly one backend
+  executes, output never duplicates" regression tests.
+- **Added:** `tests/vm-parity.test.js` — 1 new test covering the
+  zero-iteration `repeat` edge case (both the counted and bare forms).
+
+### Phase 17: Native Backend Recovery & Feature Expansion
+
+Began from a brief asserting the native x86-64 backend was "not working
+correctly." A fresh baseline (978/978 tests, plus a hands-on script that
+actually compiled and *executed* real `.exe` files) found **no
+reproducible defect** in what the native backend already claimed to
+support — the premise did not match reality. Rather than force a fix
+onto a working system, this phase pivoted to real **feature expansion**:
+using the IR Optimizer's already-existing Constant Folding and Constant
+Propagation passes (no new optimizer logic), native x86-64 codegen was
+genuinely widened from "`say` with String literals only" to
+`say`/`hold`/`const`/assignment built from literals, variables,
+arithmetic (`+ - * / % **`), comparisons (`== != > < >= <=`), and unary
+`-`/`not` — wherever every value resolves to a compile-time constant.
+
+Two genuine edge cases were found and fixed along the way by actually
+executing generated executables (never just assuming correctness):
+division/modulo by a divisor that folds to zero (previously crashed with
+a raw uncaught error; now cleanly rejected, restoring automatic
+selection's correct fallback to Bytecode + PVM), and self-referencing
+reassignment like `x = x + 1` (the IR Optimizer cannot fold a variable's
+reassignment in terms of its own prior value; now cleanly rejected at the
+cheap AST-only capability check, instead of only being caught later).
+`and`/`or`/`if`/`while`/`repeat`/`loop`/functions/recursion/Arrays/every
+Standard Library built-in remain correctly, cleanly unsupported — nothing
+was silently forced through. `npm test` was 978/978 passing immediately
+before this phase; **989/989 passing after**, zero regressions. See
+[docs/MASTER_DOCUMENT.md §37](docs/MASTER_DOCUMENT.md#37-native-backend-recovery--feature-expansion-phase-17)
+for the full audit trail, the two edge-case root-causes, and the
+IR-Feature/Codegen/Executable-Tested matrix.
+
+- **Changed:** `src/native/codegen/native-codegen.js` — `checkNativeStatement`/
+  `checkNativeExpression` widened to accept `hold`/`const` declarations,
+  assignment, and arithmetic/comparison/unary expressions; a new static
+  check rejects a literal-zero divisor and a self-referencing reassignment
+  upfront, each with its own specific `P030` reason.
+- **Changed:** `src/native/codegen/ir-to-x86-64.js` — `resolveConstantOperand`/
+  `extractPrintedLines` now also track `STORE`d variables (not just
+  `say`-bound temps) and stringify Number/Decimal/Boolean/Empty values
+  (not just String, matching `stringify.js` exactly); the two internal
+  "value never resolved" cases now throw a clean `NativeCompileError`
+  (`P030`) instead of a bare, uncaught `Error`.
+- **Changed:** `src/backend/capability.js` — unchanged in shape; continues
+  to reuse `checkNativeStatement` directly, so the wider Stage-1 gate
+  above is automatically reflected in automatic/forced backend selection
+  with no separate capability-analysis code to keep in sync.
+- **Added:** `examples/native/variables.pr` — the newly-supported subset
+  in a working example (declarations, arithmetic, comparisons, unary
+  operators, reassignment), proven identical across all three backends.
+- **Added:** 13 new "supported, really executed" tests plus 4 new
+  regression tests (2 division-by-zero variants, 1 variable-derived-zero
+  variant, 1 self-referencing-reassignment variant) in
+  `tests/native/native-compiler.test.js`; 1 new
+  `checkNativeCapability`-level self-reference test in
+  `tests/backend/capability.test.js`; several existing tests' example
+  programs updated where the original example was no longer a valid
+  "native can't run this" case (e.g. a plain variable declaration), never
+  by weakening what the test itself checks.
+- **Not changed:** the Tree-Walking Interpreter, Bytecode Generator, PVM,
+  Bytecode Optimizer, and every Standard Library built-in — this phase
+  touched only `src/native/` and `src/backend/capability.js`.
+
 ### Phase 16: Unified Loop Model — `loop`, and `break <expression>`
 
 Adds one new, unconditional loop construct, `loop ... end loop`, and

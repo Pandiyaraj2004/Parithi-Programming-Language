@@ -1,0 +1,24 @@
+# Native backend (Phase 17 expansion) — "hold"/"const" declarations,
+# assignment, arithmetic, comparisons, and unary operators, all built from
+# values the IR Optimizer can fold to a compile-time constant.
+
+hold price = 25
+hold quantity = 4
+say price * quantity
+
+const taxRate = 0.08
+hold total = price * quantity
+say total
+
+hold isExpensive = total > 50
+say isExpensive
+
+hold discounted = total - 10
+say discounted
+
+hold applied = false
+applied = true
+say applied
+
+say -quantity
+say not isExpensive

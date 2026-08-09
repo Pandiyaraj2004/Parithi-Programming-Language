@@ -1,0 +1,244 @@
+# ============================================================
+# Parithi — Full Language Showcase
+# Exercises every keyword, data type, operator, control-flow
+# construct, and built-in function currently in the language.
+# ============================================================
+
+# ---------- 1. Variables & constants (hold / const) ----------
+hold name = "Pandiyaraj"
+const pi = 3.14159
+hold age = 25
+hold isStudent = true
+hold nothing = empty
+
+say "== Variables =="
+say "Name:", name
+say "Age:", age
+say "Pi:", pi
+say "Is student:", isStudent
+say "Nothing:", nothing
+
+# ---------- 2. Arithmetic operators ----------
+hold a = 10
+hold b = 3
+
+say ""
+say "== Arithmetic =="
+say "a + b =", a + b
+say "a - b =", a - b
+say "a * b =", a * b
+say "a / b =", a / b
+say "a % b =", a % b
+say "a ** b =", a ** b
+say "-a =", -a
+
+# ---------- 3. String concatenation ----------
+say ""
+say "== Strings =="
+say "Greeting:", "Hello, " + name + "!"
+
+# ---------- 4. Comparison operators (symbolic + readable "is") ----------
+say ""
+say "== Comparisons =="
+say "a == b:", a == b
+say "a != b:", a != b
+say "a > b:", a > b
+say "a < b:", a < b
+say "a >= b:", a >= b
+say "a <= b:", a <= b
+say "a is b:", a is b
+say "a is not b:", a is not b
+say "a is more than b:", a is more than b
+say "a is less than b:", a is less than b
+say "age is at least 18:", age is at least 18
+say "age is at most 17:", age is at most 17
+
+# ---------- 5. Boolean logic (and / or / not) ----------
+say ""
+say "== Boolean logic =="
+say "true and false:", true and false
+say "true or false:", true or false
+say "not true:", not true
+
+# ---------- 6. if / else ----------
+say ""
+say "== if/else =="
+if age >= 18
+    say "Adult"
+else
+    say "Minor"
+end if
+
+# ---------- 7. choose / option / other (switch) ----------
+say ""
+say "== choose/option/other =="
+hold day = 3
+choose day
+    option 1
+        say "Monday"
+    option 2
+        say "Tuesday"
+    option 3
+        say "Wednesday"
+    other
+        say "Some other day"
+end choose
+
+# ---------- 8. repeat (counted loop) ----------
+say ""
+say "== repeat =="
+repeat 5 as i
+    say "Repeat iteration:", i
+end repeat
+
+# ---------- 9. while loop ----------
+say ""
+say "== while =="
+hold counter = 0
+while counter < 3
+    say "While counter:", counter
+    counter = counter + 1
+end while
+
+# ---------- 10. loop + break <value> (unconditional, expression-capable) ----------
+say ""
+say "== loop + break <value> =="
+hold n = 0
+hold firstMultipleOf7 = loop
+    n = n + 1
+    if n % 7 == 0
+        break n
+    end if
+end loop
+say "First multiple of 7:", firstMultipleOf7
+
+# ---------- 11. break / continue inside a counted loop ----------
+say ""
+say "== break/continue =="
+repeat 10 as i
+    if i % 2 == 0
+        continue
+    end if
+    if i > 7
+        break
+    end if
+    say "Odd number:", i
+end repeat
+
+# ---------- 12. task (functions), parameters, return, recursion ----------
+say ""
+say "== Functions & recursion =="
+
+task add(x, y)
+    return x + y
+end task
+
+task factorial(n)
+    if n <= 1
+        return 1
+    end if
+    return n * factorial(n - 1)
+end task
+
+say "add(4, 5) =", add(4, 5)
+say "factorial(5) =", factorial(5)
+
+# ---------- 13. Arrays (box) ----------
+say ""
+say "== Arrays (box) =="
+hold fruits = box("apple", "banana", "cherry")
+say "Original:", fruits
+
+push(fruits, "date")
+say "After push:", fruits
+
+hold removedFruit = pop(fruits)
+say "Popped:", removedFruit
+say "After pop:", fruits
+
+insert(fruits, 1, "apricot")
+say "After insert:", fruits
+
+remove(fruits, 0)
+say "After remove:", fruits
+
+sort(fruits)
+say "Sorted:", fruits
+
+reverse(fruits)
+say "Reversed:", fruits
+
+say "Contains banana:", contains(fruits, "banana")
+say "Length:", length(fruits)
+say "First element:", fruits[0]
+
+fruits[0] = "avocado"
+say "After index assignment:", fruits
+
+clear(fruits)
+say "After clear:", fruits
+
+# ---------- 14. Math built-ins ----------
+say ""
+say "== Math built-ins =="
+say "round(3.14159, 2):", round(3.14159, 2)
+say "sqrt(16):", sqrt(16)
+say "pow(2, 8):", pow(2, 8)
+say "abs(-9):", abs(-9)
+say "floor(3.9):", floor(3.9)
+say "ceil(3.1):", ceil(3.1)
+say "min(4, 9):", min(4, 9)
+say "max(4, 9):", max(4, 9)
+say "randomInt(1, 1):", randomInt(1, 1)
+say "sin(0):", sin(0)
+say "cos(0):", cos(0)
+say "log(1):", log(1)
+say "exp(0):", exp(0)
+
+# ---------- 15. String built-ins ----------
+say ""
+say "== String built-ins =="
+hold sentence = "  Parithi Programming Language  "
+say "upper:", upper(sentence)
+say "lower:", lower(sentence)
+say "trim:", trim(sentence)
+say "split:", split("a,b,c", ",")
+say "join:", join(box("x", "y", "z"), "-")
+say "replace:", replace("hello world", "world", "Parithi")
+say "startsWith:", startsWith("Parithi", "Pari")
+say "endsWith:", endsWith("Parithi", "thi")
+say "substring:", substring("Parithi", 0, 4)
+say "indexOf:", indexOf("Parithi", "it")
+say "lastIndexOf:", lastIndexOf("banana", "a")
+say "repeatText:", repeatText("ab", 3)
+say "reverseText:", reverseText("Parithi")
+
+# ---------- 16. Type built-ins ----------
+say ""
+say "== Type built-ins =="
+say "type(a):", type(a)
+say "type(name):", type(name)
+say "type(isStudent):", type(isStudent)
+say "type(nothing):", type(nothing)
+say "number('42'):", number("42")
+say "text(42):", text(42)
+say "boolean(1):", boolean(1)
+say "isNumber(a):", isNumber(a)
+say "isText(name):", isText(name)
+say "isBoolean(isStudent):", isBoolean(isStudent)
+say "isEmpty(nothing):", isEmpty(nothing)
+
+# ---------- 17. System built-ins ----------
+say ""
+say "== System built-ins =="
+say "version():", version()
+say "platform():", platform()
+say "workingDirectory():", workingDirectory()
+say "arguments():", arguments()
+
+# ---------- 18. stop (early exit with a code) ----------
+say ""
+say "== stop =="
+say "About to stop with exit code 0"
+stop 0
+say "This line never runs"

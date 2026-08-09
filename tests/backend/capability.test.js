@@ -39,41 +39,41 @@ describe('checkNativeCapability', () => {
     assert.equal(checkNativeCapability(program, filePath).supported, true);
   });
 
-  test('any non-"say" top-level statement is unsupported, naming its exact node type', () => {
-    const { program, filePath } = parse('hold x = 1\n');
+  test('any non-"say"/declaration/assignment top-level statement is unsupported, naming its exact node type', () => {
+    const { program, filePath } = parse('stop 1\n');
     const result = checkNativeCapability(program, filePath);
     assert.equal(result.supported, false);
-    assert.equal(result.feature, 'VariableDeclaration');
-    assert.match(result.reason, /only compiles "say" statements with String literal arguments/);
+    assert.equal(result.feature, 'StopStatement');
+    assert.match(result.reason, /only compiles "hold"\/"const" declarations, assignment, and "say" statements/);
   });
 
-  test('"say" with a non-String argument is unsupported, naming the argument\'s type', () => {
-    const { program, filePath } = parse('say 42\n');
+  test('"say" with a disallowed binary operator ("and"/"or") is unsupported, naming the exact operator', () => {
+    const { program, filePath } = parse('say true and false\n');
     const result = checkNativeCapability(program, filePath);
     assert.equal(result.supported, false);
-    assert.equal(result.feature, 'say with a Number argument');
+    assert.equal(result.feature, '"and"');
+    assert.match(result.reason, /short-circuit branching/);
   });
 
-  test('"say" with a non-literal argument names the argument\'s own node type, not "Literal"', () => {
-    // There is no real, Semantic-Analysis-valid Parithi program where a
-    // top-level "say" argument is an Identifier — any prior variable
-    // declaration needed to define that identifier is itself a
-    // non-"say" top-level statement, so it gets rejected first (see the
-    // "any non-say top-level statement" test above). This hand-builds
-    // the AST shape directly to exercise that branch of the feature-name
-    // logic (`arg.type === LITERAL ? arg.valueType : arg.type`) in isolation.
+  test('"say" with a non-literal, non-identifier, non-arithmetic argument names the argument\'s own node type', () => {
+    // There is no real, Semantic-Analysis-valid top-level Parithi program
+    // where a "say" argument is a bare FunctionCall with no enclosing
+    // arithmetic (calls always need real runtime control flow, which
+    // Semantic Analysis permits but the native subset does not). This
+    // hand-builds the AST shape directly to exercise the `default` branch
+    // of checkNativeExpression's node-type switch in isolation.
     const filePath = 'capability-test.pr';
     const program = {
       body: [{
         type: 'PrintStatement',
         line: 1,
         column: 1,
-        arguments: [{ type: 'Identifier', name: 'x', line: 1, column: 5 }],
+        arguments: [{ type: 'FunctionCall', name: 'f', args: [], line: 1, column: 5 }],
       }],
     };
     const result = checkNativeCapability(program, filePath);
     assert.equal(result.supported, false);
-    assert.equal(result.feature, 'say with a Identifier argument');
+    assert.equal(result.feature, 'FunctionCall');
   });
 
   test('the unsupported result carries a real, formattable NativeCompileError (P030)', () => {
@@ -92,6 +92,13 @@ describe('checkNativeCapability', () => {
     const result = checkNativeCapability(program, filePath);
     assert.equal(result.supported, false);
     assert.equal(result.feature, 'ChooseStatement');
+  });
+
+  test('a self-referencing reassignment ("x = x + 1") is unsupported — the IR Optimizer cannot fold it, so Stage 1 must catch it, not just Stage 2', () => {
+    const { program, filePath } = parse('hold x = 1\nx = x + 1\nsay x\n');
+    const result = checkNativeCapability(program, filePath);
+    assert.equal(result.supported, false);
+    assert.equal(result.feature, 'self-referencing reassignment of "x"');
   });
 });
 
@@ -144,7 +151,7 @@ describe('selectBackend — real programs', () => {
   });
 
   test('a program outside the native subset selects Bytecode (next in priority), not Interpreter', () => {
-    const { program, filePath } = parse('hold x = 1\nsay x\n');
+    const { program, filePath } = parse('if true\n    say "x"\nend if\n');
     const selection = selectBackend(program, filePath);
     assert.equal(selection.selected, 'bytecode');
     const native = selection.evaluations.find((e) => e.id === 'native');
@@ -167,7 +174,7 @@ describe('evaluateBackend — single forced backend', () => {
   });
 
   test('evaluating "native" on a non-eligible program reports unsupported with a real error', () => {
-    const { program, filePath } = parse('hold x = 1\n');
+    const { program, filePath } = parse('if true\n    say "x"\nend if\n');
     const evaluation = evaluateBackend('native', program, filePath);
     assert.equal(evaluation.supported, false);
     assert.equal(typeof evaluation.error.format, 'function');

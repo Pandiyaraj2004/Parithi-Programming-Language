@@ -8,15 +8,21 @@
  * Windows, not just that JavaScript ran without throwing.
  *
  * SCOPE (honest, not aspirational — see native-codegen.js's own class doc):
- * the native backend currently compiles only a sequence of top-level `say`
- * statements with String literal arguments. Every other Parithi
- * construct (variables, arithmetic, control flow, functions, recursion,
- * `stop`, built-ins) is tested here only for its DIAGNOSTIC path — that it
- * fails cleanly with a P030 error, never a crash and never a silently
- * wrong `.exe` — not for successful native compilation, because it isn't
- * supported yet. `examples/native/` deliberately contains only the two
- * programs that genuinely compile (`hello.pr`, `strings.pr`); adding a
- * `variables.pr`/`loops.pr`/etc. there would misleadingly imply support
+ * the native backend compiles a sequence of top-level `hold`/`const`
+ * declarations, plain-variable assignment, and `say` statements, whose
+ * values/arguments are built ONLY from literals, variable references,
+ * arithmetic (`+ - * / % **`), comparisons (`== != > < >= <=`), and unary
+ * `-`/`not` — i.e. exactly the expression shapes the IR Optimizer's
+ * Constant Folding + Constant Propagation passes can always reduce to a
+ * single, known-at-compile-time value ("compile-time-constant-only"
+ * support — not a real register allocator or runtime variable storage).
+ * Every other Parithi construct (`and`/`or`, control flow, functions,
+ * recursion, `stop`, built-ins, arrays) is tested here only for its
+ * DIAGNOSTIC path — that it fails cleanly with a P030 error, never a
+ * crash and never a silently wrong `.exe` — not for successful native
+ * compilation, because it isn't supported yet. `examples/native/`
+ * deliberately contains only the programs that genuinely compile; adding
+ * a `loops.pr`/`functions.pr`/etc. there would misleadingly imply support
  * that doesn't exist.
  */
 
@@ -124,12 +130,79 @@ describe('Native compilation — real .exe generation and execution', () => {
   });
 });
 
+describe('Native compilation — compile-time-constant variables and expressions (Phase 17 expansion)', () => {
+  const supported = [
+    { name: 'a variable declaration, printed by name', source: 'hold x = 5\nsay x\n', stdout: '5\n' },
+    { name: 'a constant declaration alone (no say) still compiles and exits 0', source: 'const PI = 3.14\n', stdout: '' },
+    { name: 'arithmetic folded to a constant', source: 'say 1 + 2\n', stdout: '3\n' },
+    { name: 'a comparison folded to a Boolean constant', source: 'say 1 < 2\n', stdout: 'true\n' },
+    { name: 'a non-literal say argument (identifier)', source: 'hold x = "hi"\nsay x\n', stdout: 'hi\n' },
+    { name: 'a non-literal say argument (expression), including string concatenation', source: 'say "a" + "b"\n', stdout: 'ab\n' },
+    { name: 'a non-String say argument (Number)', source: 'say 5\n', stdout: '5\n' },
+    { name: 'a non-String say argument (Boolean)', source: 'say true\n', stdout: 'true\n' },
+    { name: 'reassignment ("last write wins")', source: 'hold x = 1\nx = 2\nsay x\n', stdout: '2\n' },
+    { name: 'unary negation', source: 'say -5\n', stdout: '-5\n' },
+    { name: 'unary "not"', source: 'say not true\n', stdout: 'false\n' },
+    { name: 'exponentiation and modulo', source: 'hold a = 2 ** 10\nhold b = 10 % 3\nsay a\nsay b\n', stdout: '1024\n1\n' },
+    { name: 'a variable used in an arithmetic expression with another variable', source: 'hold a = 10\nhold b = 20\nsay a + b\n', stdout: '30\n' },
+  ];
+
+  const literalZeroDivisor = [
+    { name: 'division by a literal zero', source: 'say 10 / 0\n' },
+    { name: 'modulo by a literal zero', source: 'say 10 % 0\n' },
+  ];
+
+  for (const { name, source } of literalZeroDivisor) {
+    test(`${name} is rejected cleanly (P030), never baked into an executable that would hide the runtime P020 error`, () => {
+      const result = compileNative(source, 'test.pr');
+      assert.equal(result.success, false);
+      assert.equal(result.diagnostics.length, 1);
+      assert.equal(result.diagnostics[0].code, 'P030');
+      assert.match(result.diagnostics[0].format(), /literal zero/);
+    });
+  }
+
+  test('division by a variable that only resolves to zero after constant propagation fails cleanly (P030), never a raw crash', () => {
+    // Stage 1's AST-only gate only catches a *literal* zero divisor cheaply;
+    // this deeper case is only discovered once the IR Optimizer's constant
+    // propagation resolves "z" to 0, after Stage 1 already accepted the
+    // program — ir-to-x86-64.js's own defense-in-depth must still report it
+    // cleanly instead of throwing an uncaught internal Error.
+    const result = compileNative('hold z = 0\nhold x = 10 / z\nsay x\n', 'test.pr');
+    assert.equal(result.success, false);
+    assert.equal(result.diagnostics.length, 1);
+    assert.equal(result.diagnostics[0].code, 'P030');
+  });
+
+  test('a self-referencing reassignment ("x = x + 1") is rejected cleanly (P030) at Stage 1, naming the variable', () => {
+    // The IR Optimizer propagates a variable's value forward to later reads,
+    // but does not fold an expression that reassigns a variable in terms of
+    // that SAME variable's own prior value — Stage 1 must catch this cheaply
+    // rather than let Stage 2 discover it (which would still fail cleanly,
+    // per the test above, but would incorrectly let automatic backend
+    // selection pick Native in the first place).
+    const result = compileNative('hold x = 1\nx = x + 1\nsay x\n', 'test.pr');
+    assert.equal(result.success, false);
+    assert.equal(result.diagnostics.length, 1);
+    assert.equal(result.diagnostics[0].code, 'P030');
+    assert.match(result.diagnostics[0].format(), /self-referencing reassignment of "x"/);
+  });
+
+  for (const { name, source, stdout } of supported) {
+    test(`${name} compiles, executes, and matches the Interpreter's own output`, () => {
+      const { compileFailed, stdout: nativeStdout, exitCode: nativeExitCode } = compileAndRun(source);
+      const interp = runInterpreter(source);
+      assert.equal(compileFailed, false);
+      assert.equal(nativeStdout, stdout);
+      assert.equal(nativeStdout, interp.stdout, 'Native vs Interpreter stdout mismatch');
+      assert.equal(nativeExitCode, interp.exitCode, 'Native vs Interpreter exit code mismatch');
+      assert.equal(nativeExitCode, 0);
+    });
+  }
+});
+
 describe('Native compilation — unsupported features fail cleanly (never a silent miscompile)', () => {
   const unsupported = [
-    { name: 'variable declaration', source: 'hold x = 5\nsay x\n' },
-    { name: 'constant declaration', source: 'const PI = 3.14\n' },
-    { name: 'arithmetic', source: 'say 1 + 2\n' },
-    { name: 'comparison', source: 'say 1 < 2\n' },
     { name: 'boolean logic', source: 'say true and false\n' },
     { name: 'if/else', source: 'if true\n    say "x"\nend if\n' },
     { name: 'while loop', source: 'while true\n    break\nend while\n' },
@@ -137,10 +210,6 @@ describe('Native compilation — unsupported features fail cleanly (never a sile
     { name: 'choose', source: 'choose 1\n    option 1\n        say "one"\nend choose\n' },
     { name: 'task/function declaration', source: 'task f()\n    return 1\nend task\n' },
     { name: 'stop statement', source: 'stop 1\n' },
-    { name: 'a non-literal say argument (identifier)', source: 'hold x = "hi"\nsay x\n' },
-    { name: 'a non-literal say argument (expression)', source: 'say "a" + "b"\n' },
-    { name: 'a non-String say argument (Number)', source: 'say 5\n' },
-    { name: 'a non-String say argument (Boolean)', source: 'say true\n' },
     { name: 'array (box)', source: 'hold arr = box(1, 2)\n' },
   ];
 
@@ -181,6 +250,7 @@ describe('Cross-backend parity — Interpreter vs. PVM vs. Native, for every cur
     '',
     readFileSync(join(examplesDir, 'hello.pr'), 'utf8'),
     readFileSync(join(examplesDir, 'strings.pr'), 'utf8'),
+    readFileSync(join(examplesDir, 'variables.pr'), 'utf8'),
   ];
 
   for (const [i, source] of programs.entries()) {

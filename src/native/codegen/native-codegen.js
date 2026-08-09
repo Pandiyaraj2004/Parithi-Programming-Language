@@ -1,38 +1,34 @@
 /**
- * Native codegen — Phase 13, now fronted by a real IR pipeline. Translates
+ * Native codegen — Phase 13/17, now fronted by a real IR pipeline. Translates
  * a validated Parithi `Program` AST node into x86-64 machine code + PE
  * import/fixup metadata, ready for `src/native/pe/pe-writer.js`.
  *
  * TWO-STAGE VALIDATION, DELIBERATELY (not redundant): this file's own
- * `extractSayText` AST-level gate runs FIRST and is UNCHANGED from
- * before the IR pipeline existed — it's what still produces the exact,
- * already-tested `NativeCompileError` messages naming the precise
- * unsupported AST construct (`"Feature \"VariableDeclaration\" is
- * not..."` etc.). Only once a program passes that gate does this module
- * additionally run it through the real three-address-code IR
+ * `checkNativeStatement`/`checkNativeExpression` AST-level gate runs FIRST
+ * — it's what produces a precise `NativeCompileError` naming the exact
+ * unsupported AST construct. Only once a program passes that gate does
+ * this module additionally run it through the real three-address-code IR
  * (`src/native/ir/ir-generator.js`) and IR Optimizer
  * (`src/native/ir/optimizer/`) — and the actual x86-64 bytes are emitted
  * FROM that optimized IR (`ir-to-x86-64.js`), not by re-walking the AST a
- * second time. This satisfies "the code generator consumes the optimized
- * IR instead of the AST" for real, while keeping every existing
- * diagnostic's wording (and the tests that check it) exactly as it was —
- * removing the AST gate and re-deriving the same diagnostics from IR
- * shapes instead would only produce a second, less-precise error path
- * for problems the AST gate already reports precisely.
+ * second time.
  *
- * SUPPORTED SUBSET (intentionally small — §7 of the Phase 13 brief: "do
- * NOT attempt to compile every feature immediately"): a sequence of
- * top-level `say` statements, each with one or more String literal
- * arguments (space-joined, matching `Interpreter.visitPrintStatement`
- * exactly — see interpreter.js:222-224). Nothing else yet. Any other
- * top-level statement, or a `say` argument that isn't a plain String
- * literal, raises `NativeCompileError` (P030) — never a silently wrong
- * `.exe`. This will grow (variables, arithmetic, control flow, functions)
- * as dedicated tests are added for each, per the brief's own rule:
- * "only mark a feature as native-supported after it has dedicated tests"
- * — and when it does, `ir-to-x86-64.js` is the file that grows to emit
- * real x86-64 for the IR shapes the generator/optimizer already model
- * today (arithmetic, branches, calls — see ir-nodes.js).
+ * SUPPORTED SUBSET (Phase 17 — "Native Backend Recovery" audit): a
+ * sequence of top-level `hold`/`const` declarations, plain-variable
+ * `assignment`, and `say` statements, whose values/arguments are built
+ * ONLY from literals, variable references, arithmetic (`+ - * / % **`),
+ * and comparisons (`== != > < >= <=`) — i.e. exactly the expression
+ * shapes the IR Optimizer's Constant Folding + Constant Propagation
+ * passes (already built for Phase 13's IR work — see `optimizer/`) can
+ * always reduce to a single, compile-time-known value. `ir-to-x86-64.js`
+ * only ever has to emit a `say` of an already-known constant — this is
+ * why the subset is scoped exactly this way, not because these are the
+ * only IR shapes that exist: `if`/`while`/`repeat`/`loop`/`task`/`choose`,
+ * `and`/`or` (real short-circuit branches), arrays, and calls all
+ * genuinely need runtime control flow or memory this emitter does not
+ * generate yet (see MASTER_DOCUMENT.md §37 for the honest boundary).
+ * Anything outside this raises `NativeCompileError` (P030) — never a
+ * silently wrong `.exe`.
  */
 
 import { NodeType } from '../../ast/ast-nodes.js';
@@ -46,29 +42,124 @@ function locationOf(filePath, node) {
   return new SourceLocation(filePath, node.line, node.column);
 }
 
-/** Validates one top-level statement is within the supported subset, returning its printable text — or throws NativeCompileError. */
-function extractSayText(node, filePath) {
-  if (node.type !== NodeType.PRINT_STATEMENT) {
-    throw new NativeCompileError({
-      feature: node.type,
-      reason: 'the native backend currently only compiles "say" statements with String literal arguments.',
-      location: locationOf(filePath, node),
-      suggestion: 'use "pari --run-bytecode"/"pari <file.pr>" (Interpreter/PVM) for full-language support, or simplify this program for --native.',
-    });
-  }
-  return node.arguments
-    .map((arg) => {
-      if (arg.type !== NodeType.LITERAL || arg.valueType !== 'String') {
+// "and"/"or" are deliberately excluded — ir-generator.js lowers them to a
+// real short-circuit BRANCH (two basic blocks), not a single instruction,
+// and ir-to-x86-64.js only ever emits code for one straight-line block.
+// Every operator here instead lowers to exactly one IR instruction with no
+// control flow, which is what keeps the whole program foldable to known
+// constants by the existing IR Optimizer.
+const ALLOWED_BINARY_OPERATORS = new Set(['+', '-', '*', '/', '%', '**', '==', '!=', '>', '<', '>=', '<=']);
+
+/**
+ * Recursively validates that `node` is built only from the allowed
+ * expression shapes (Literal, Identifier, arithmetic/comparison
+ * BinaryExpression, UnaryExpression) — never checking whether an
+ * Identifier is actually *declared*, since Semantic Analysis already
+ * guarantees that before native codegen ever runs.
+ */
+function checkNativeExpression(node, filePath) {
+  switch (node.type) {
+    case NodeType.LITERAL:
+    case NodeType.IDENTIFIER:
+      return;
+    case NodeType.BINARY_EXPRESSION:
+      if (!ALLOWED_BINARY_OPERATORS.has(node.operator)) {
         throw new NativeCompileError({
-          feature: `say with a ${arg.type === NodeType.LITERAL ? arg.valueType : arg.type} argument`,
-          reason: 'the native backend can currently only print String literals, not variables, expressions, or other value types.',
-          location: locationOf(filePath, arg),
-          suggestion: 'use only double-quoted string literals in "say" for --native, e.g. say "Hello, Parithi!".',
+          feature: `"${node.operator}"`,
+          reason: '"and"/"or" require real short-circuit branching, which the native backend does not generate yet.',
+          location: locationOf(filePath, node),
+          suggestion: 'use "pari --run-bytecode"/"pari <file.pr>" (Interpreter/PVM) for full-language support.',
         });
       }
-      return arg.value;
-    })
-    .join(' ');
+      if ((node.operator === '/' || node.operator === '%') && node.right.type === NodeType.LITERAL && node.right.value === 0) {
+        throw new NativeCompileError({
+          feature: `"${node.operator}" by a literal zero`,
+          reason: 'division/modulo by zero is a runtime error (P020), not a compile-time constant — the native backend never bakes a runtime error into an executable.',
+          location: locationOf(filePath, node),
+          suggestion: 'use "pari --run-bytecode"/"pari <file.pr>" (Interpreter/PVM) to see the normal P020 runtime diagnostic.',
+        });
+      }
+      checkNativeExpression(node.left, filePath);
+      checkNativeExpression(node.right, filePath);
+      return;
+    case NodeType.UNARY_EXPRESSION:
+      checkNativeExpression(node.operand, filePath);
+      return;
+    default:
+      throw new NativeCompileError({
+        feature: node.type,
+        reason: 'the native backend currently only supports literals, variables, arithmetic, and comparisons in an expression.',
+        location: locationOf(filePath, node),
+        suggestion: 'use "pari --run-bytecode"/"pari <file.pr>" (Interpreter/PVM) for full-language support, or simplify this expression for --native.',
+      });
+  }
+}
+
+/**
+ * True if `node` reads the variable `name` anywhere within it. Used only to
+ * catch a self-referencing reassignment (`x = x + 1`) at Stage 1 — the IR
+ * Optimizer's constant propagation resolves a variable's value forward from
+ * its declaration to later reads, but does not fold an expression that
+ * reassigns a variable in terms of that SAME variable's own prior value, so
+ * without this check Stage 1 would wrongly accept a program Stage 2 can
+ * never actually constant-fold.
+ */
+function expressionReferencesIdentifier(node, name) {
+  switch (node.type) {
+    case NodeType.IDENTIFIER:
+      return node.name === name;
+    case NodeType.BINARY_EXPRESSION:
+      return expressionReferencesIdentifier(node.left, name) || expressionReferencesIdentifier(node.right, name);
+    case NodeType.UNARY_EXPRESSION:
+      return expressionReferencesIdentifier(node.operand, name);
+    default:
+      return false;
+  }
+}
+
+/**
+ * Validates one top-level statement is within the supported subset.
+ * Returns the statement's printable text (space-joined `say` arguments)
+ * if it is a `say`, or `null` for a declaration/assignment (which prints
+ * nothing) — mirroring `extractSayText`'s old return contract for the
+ * legacy `--native --ir` summary below. Throws `NativeCompileError`
+ * (P030) for anything outside the supported subset.
+ *
+ * Exported (not just used internally) so `src/backend/capability.js`'s
+ * `checkNativeCapability()` can reuse this EXACT gate for its own cheap,
+ * non-executing "can native run this?" check (§34.3's own requirement:
+ * capability analysis must reuse the real gate, never a second,
+ * independently-maintained copy of it that could silently drift out of
+ * sync).
+ */
+export function checkNativeStatement(node, filePath) {
+  switch (node.type) {
+    case NodeType.VARIABLE_DECLARATION:
+    case NodeType.CONSTANT_DECLARATION:
+      checkNativeExpression(node.value, filePath);
+      return null;
+    case NodeType.ASSIGNMENT:
+      if (expressionReferencesIdentifier(node.value, node.name)) {
+        throw new NativeCompileError({
+          feature: `self-referencing reassignment of "${node.name}"`,
+          reason: 'a reassignment built from that same variable\'s own prior value (e.g. "x = x + 1") cannot be constant-folded — that would require reading a real runtime value, not a compile-time constant.',
+          location: locationOf(filePath, node),
+          suggestion: 'use "pari --run-bytecode"/"pari <file.pr>" (Interpreter/PVM) for full-language support.',
+        });
+      }
+      checkNativeExpression(node.value, filePath);
+      return null;
+    case NodeType.PRINT_STATEMENT:
+      node.arguments.forEach((arg) => checkNativeExpression(arg, filePath));
+      return node;
+    default:
+      throw new NativeCompileError({
+        feature: node.type,
+        reason: 'the native backend currently only compiles "hold"/"const" declarations, assignment, and "say" statements built from literals, variables, arithmetic, and comparisons.',
+        location: locationOf(filePath, node),
+        suggestion: 'use "pari --run-bytecode"/"pari <file.pr>" (Interpreter/PVM) for full-language support, or simplify this program for --native.',
+      });
+  }
 }
 
 /**
@@ -85,19 +176,30 @@ function extractSayText(node, filePath) {
  */
 export function compileProgramToNative(program, filePath) {
   // Stage 1 — the AST-level "is this within the native-compilable subset"
-  // gate (unchanged since before the IR pipeline existed — see class doc).
-  const lines = program.body.map((node) => extractSayText(node, filePath));
-  const ir = [...lines.map((line) => `Say(${JSON.stringify(line)})`), 'Exit(0)']; // legacy summary format, kept as-is — see the return type doc above
+  // gate (see class doc). Every statement is checked regardless of shape;
+  // only `say` statements contribute anything to the legacy `--native --ir`
+  // summary built below (declarations/assignment print nothing).
+  program.body.forEach((node) => checkNativeStatement(node, filePath));
 
   // Stage 2 — the real pipeline: AST -> IR -> Optimized IR -> x86-64. Every
-  // program that reaches here already passed Stage 1, so `generateIR` can
-  // only ever produce the simple, single-block "$main" shape ir-to-x86-64.js
-  // expects (CONST/PRINT only) — see ir-generator.js's own supported-subset
-  // list, which is currently a superset of what `extractSayText` allows
-  // through; nothing here silently accepts more than Stage 1 already validated.
+  // program that reaches here already passed Stage 1, so the IR Optimizer's
+  // existing Constant Folding/Propagation passes are guaranteed to resolve
+  // every value ir-to-x86-64.js needs down to a known constant — nothing
+  // here silently accepts more than Stage 1 already validated.
   const threeAddressIR = generateIR(program);
   const { program: optimizedIR, statistics: optimizerStatistics } = optimize(threeAddressIR);
-  const { textBytes, textFixups, imports, stringConstants, asmListing } = emitX86FromIR(optimizedIR);
+  const { textBytes, textFixups, imports, stringConstants, asmListing } = emitX86FromIR(optimizedIR, filePath);
+
+  // Legacy "--native --ir" summary format, kept as-is (see the return type
+  // doc below) — now derived from the ACTUAL resolved output text
+  // (`stringConstants`, one Buffer per `say`, already computed by Stage 2)
+  // rather than re-deriving it from raw AST text at Stage 1, since a
+  // `say` argument may now be a variable or an arithmetic expression whose
+  // printed value isn't known until after optimization.
+  const ir = [
+    ...stringConstants.map((buf) => `Say(${JSON.stringify(buf.toString('utf8').replace(/\n$/, ''))})`),
+    'Exit(0)',
+  ];
 
   return {
     textBytes,

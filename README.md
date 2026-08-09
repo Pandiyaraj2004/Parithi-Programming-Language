@@ -55,12 +55,16 @@ standalone Windows (x86-64) `.exe` — no Node.js, no `pari`, no PVM
 involved once compiled — by writing the PE executable format and x86-64
 machine code directly (no assembler/linker exists on the reference build
 machine). This is a genuine, tested, actually-executed foundation, **not**
-full native compilation of the language yet: only `say` with String
-literal arguments reaches actual machine code today (the IR itself
-already models variables, arithmetic, control flow, and functions —
-§33.16 — x86-64 codegen for those is the next step); every other
-construct fails with a clean diagnostic rather than a wrong `.exe`
-([§33](docs/MASTER_DOCUMENT.md#33-native-compiler-phase-13-x86-64-backend)).
+full native compilation of the language yet: `say`/`hold`/`const`/
+assignment built from literals, variables, arithmetic, comparisons, and
+unary operators reach actual machine code today, whenever the IR
+Optimizer's existing constant-folding/propagation passes can resolve
+every value to a compile-time constant (Phase 17 — §37); real
+control-flow codegen (`if`/`while`/`loop`, functions, arrays) remains
+future work — every unsupported construct fails with a clean diagnostic
+rather than a wrong `.exe`
+([§33](docs/MASTER_DOCUMENT.md#33-native-compiler-phase-13-x86-64-backend),
+[§37](docs/MASTER_DOCUMENT.md#37-native-backend-recovery--feature-expansion-phase-17)).
 **Phase 14** added the **Adaptive Execution Engine**: a bare `pari
 <file.pr>` now automatically picks the best of the three coexisting
 backends — Native x86-64 → Bytecode + PVM → Tree-Walking Interpreter, in
@@ -93,15 +97,24 @@ supplies one. Purely additive: every pre-existing `while`/`repeat`/
 capability boundary does not move (it already rejected every loop
 construct before this phase, and still does — see
 [§36](docs/MASTER_DOCUMENT.md#36-unified-loop-model-phase-16)).
-**978 automated tests pass**, including a dedicated 39-test suite proving
+**992 automated tests pass**, including a dedicated 39-test suite proving
 the Interpreter and the PVM produce byte-for-byte identical output, exit
 codes, and error codes for the same programs, a further 54-test suite
 proving the same parity holds for optimized bytecode, a 17-test suite
-proving it for every new Standard Library built-in, a 37-test native suite
+proving it for every new Standard Library built-in, a 45-test native suite
 that actually writes and executes real `.exe` files (not just inspects
-compiled bytes), and a 51-test backend-selection suite covering capability
+compiled bytes), and a 52-test backend-selection suite covering capability
 analysis, automatic/forced selection, and cross-backend parity; no known
-implementation bugs.
+implementation bugs. **Phase 17** re-verified the native backend end to
+end (real `.exe` compilation and execution, PE structure, import tables,
+byte-level codegen) found no reproducible defect in what it already
+claimed to support, then — using that same verification discipline —
+expanded real x86-64 codegen to compile-time-constant variables,
+arithmetic, comparisons, and unary operators, catching and cleanly fixing
+two genuine edge cases surfaced by the expansion itself (division/modulo
+by a divisor that folds to zero, and self-referencing reassignment like
+`x = x + 1`) before they could reach a shipped diagnostic path; see
+[§37](docs/MASTER_DOCUMENT.md#37-native-backend-recovery--feature-expansion-phase-17).
 
 Deliberately **not** in v1.0, by explicit design decision rather than
 oversight (see [Known Limitations](#known-limitations) below): Maps/
@@ -394,15 +407,24 @@ Rules worth knowing, all real and enforced (not aspirational):
   (`if`/`while`/`repeat`/`break`/`continue`), and functions/recursion,
   and the optimizer genuinely folds constants, propagates them,
   simplifies algebraic identities, and removes dead/unreachable code and
-  redundant temporaries — but only `say` with String literal arguments
-  reaches actual x86-64 machine code today; every other construct fails
-  with a clean diagnostic, never a silently-wrong executable (hand-written
-  x86-64 + PE format, since no assembler/linker exists on the reference
-  build machine — every byte is verified by actually executing generated
-  `.exe` files, not just inspecting them). `--emit-ir`/
-  `--emit-optimized-ir`/`--optimizer-stats`/`--ir`/`--asm` inspect every
-  stage; see
-  [MASTER_DOCUMENT.md §33](docs/MASTER_DOCUMENT.md#33-native-compiler-phase-13-x86-64-backend).
+  redundant temporaries. **Phase 17** used exactly that existing
+  constant-folding/propagation machinery to expand real x86-64 codegen
+  from "`say` with String literals only" to `say`/`hold`/`const`/
+  assignment built from literals, variables, arithmetic, comparisons, and
+  unary operators — wherever every value resolves to a compile-time
+  constant (division/modulo by a zero divisor, and self-referencing
+  reassignment like `x = x + 1`, are cleanly rejected, not silently
+  miscompiled, since neither can be folded this way). Real control-flow
+  codegen (`if`/`while`/`loop`, functions, arrays) is still future work —
+  every other construct fails with a clean diagnostic, never a
+  silently-wrong executable (hand-written x86-64 + PE format, since no
+  assembler/linker exists on the reference build machine — every byte is
+  verified by actually executing generated `.exe` files, not just
+  inspecting them). `--emit-ir`/`--emit-optimized-ir`/`--optimizer-stats`/
+  `--ir`/`--asm` inspect every stage; see
+  [MASTER_DOCUMENT.md §33](docs/MASTER_DOCUMENT.md#33-native-compiler-phase-13-x86-64-backend)
+  and
+  [§37](docs/MASTER_DOCUMENT.md#37-native-backend-recovery--feature-expansion-phase-17).
 - **Adaptive Execution Engine:** a bare `pari <file.pr>` automatically
   selects the best of the three backends — Native x86-64 → Bytecode + PVM →
   Tree-Walking Interpreter, in that priority order — via static capability
@@ -524,6 +546,7 @@ pari examples/calculator.pr --disassemble  # print a human-readable optimized li
 pari examples/hello.pr --verbose
 pari --native examples/native/hello.pr        # write examples/native/hello.exe — run it directly, no Node.js involved
 pari --native examples/native/hello.pr --asm  # also print the generated x86-64 instructions
+pari --native examples/native/variables.pr    # variables/arithmetic/comparisons (Phase 17) — also compiles natively
 pari examples/hello.pr --backend native       # force Native x86-64 — no fallback if unsupported
 pari examples/variables.pr --backend bytecode # force Bytecode + PVM
 pari examples/variables.pr --backend interpreter  # force the Tree-Walking Interpreter
@@ -600,10 +623,10 @@ src/
 ├── vm/              Executes Parithi Bytecode: operand stack, call frames, instruction dispatcher
 ├── optimizer/       8-pass bytecode optimizer (pass-manager.js + passes/), statistics, --stats report
 ├── stdlib/          Standard Library (Phase 13, in progress): math/, string/, array/, type/, system/ — file/json/datetime/http/ pending
-├── native/          Native (x86-64) backend (Phase 13, minimal foundation): ir/ (three-address-code IR + 6-pass optimizer), codegen/, pe/ — hand-written PE writer + x86-64 encoder, `say`-with-strings only reaches actual machine code
+├── native/          Native (x86-64) backend (Phase 13, expanded Phase 17): ir/ (three-address-code IR + 6-pass optimizer), codegen/, pe/ — hand-written PE writer + x86-64 encoder; `say`/`hold`/`const`/assignment built from compile-time-constant-foldable literals/variables/arithmetic/comparisons reach actual machine code
 └── backend/         Adaptive Execution Engine (Phase 14): capability.js (per-backend static AST capability checks), selector.js (priority-order BackendSelector) — never executes anything itself
-examples/            Eleven runnable .pr sample programs (see table above), plus examples/stdlib/ (four more) and examples/native/ (two — the only programs that compile natively today)
-tests/               978 tests across 22 files (node:test), incl. tests/native/ which actually executes generated .exe files and tests/backend/ which covers capability analysis and backend selection
+examples/            Eleven runnable .pr sample programs (see table above), plus examples/stdlib/ (four more) and examples/native/ (three — the only programs that compile natively today)
+tests/               992 tests across 22 files (node:test), incl. tests/native/ which actually executes generated .exe files and tests/backend/ which covers capability analysis and backend selection
 benchmarks/          optimizer-benchmark.mjs, native-benchmark.mjs — before/after instruction count/VM timing, and native-vs-Interpreter/PVM timing (dev tools, not shipped)
 docs/                Language spec, audit report, release notes, arrays design proposal, optimizer benchmarks
 ```
@@ -616,7 +639,7 @@ Full detail: [docs/MASTER_DOCUMENT.md §10](docs/MASTER_DOCUMENT.md#10-project-f
 npm test
 ```
 
-978 tests across 22 files: `foundation`, `lexer`, `parser`, `semantic`,
+992 tests across 22 files: `foundation`, `lexer`, `parser`, `semantic`,
 `interpreter`, `e2e` (runs the real files in `examples/` through the full
 pipeline), `error-messages` (verifies every error class/stage produces a
 code, message, location, and helpful suggestion), `runtime` (RuntimeValue,
@@ -636,9 +659,13 @@ normal cases, invalid arguments, Unicode strings, and domain/range errors),
 across every new built-in in every category), `native` (the one suite
 that doesn't stop at "the compiler produced bytes" — every success-path
 test writes a real PE `.exe` and *executes* it via `spawnSync`, checking
-genuine stdout/exit code; every unsupported-feature case is asserted to
-fail with a clean P030, never a crash; a 3-way Interpreter/PVM/Native
-parity sweep for the currently-supported subset), `native/ir` (AST → IR
+genuine stdout/exit code, including Phase 17's compile-time-constant
+variables/arithmetic/comparisons/reassignment/unary-operator cases;
+every unsupported-feature case — including the two edge cases Phase 17
+found and fixed, division/modulo-by-zero and self-referencing
+reassignment — is asserted to fail with a clean P030, never a crash; a
+3-way Interpreter/PVM/Native parity sweep for the currently-supported
+subset), `native/ir` (AST → IR
 generation for every construct §33.16 covers — variables, expressions,
 conditions, loops, functions, recursion), `native/ir-optimizer` (all 6
 IR optimizer passes, each tested both in isolation and as part of the
@@ -699,14 +726,21 @@ By explicit design decision, not oversight — see
   project has kept zero runtime dependencies since v1.0, so a *blocking*
   `get()`/`post()` needs either a `worker_threads`/`Atomics.wait` bridge,
   shelling out to `curl`, or an actual dependency (§32.10).
-- **Native compiler is a minimal foundation, not full-language native
-  compilation (Phase 13)** — `--native` compiles only `say` with String
-  literal arguments to actual x86-64 today; variables, arithmetic,
-  control flow, functions/recursion, Arrays, and every Standard Library
-  built-in are not yet supported and fail with a clean diagnostic, never
-  a silently-wrong `.exe` (§33.9). This is despite the IR itself already
-  modeling all of those (§33.16) and the IR Optimizer already correctly
-  optimizing programs that use them (§33.19) — the gap is specifically in
+- **Native compiler is a compile-time-constant-only foundation, not
+  full-language native compilation (Phase 13, expanded Phase 17)** —
+  `--native` compiles `say`/`hold`/`const`/assignment built from
+  literals, variables, arithmetic, comparisons, and unary operators,
+  wherever the IR Optimizer's existing constant-folding/propagation
+  passes can resolve every value to a compile-time constant; a
+  self-referencing reassignment (`x = x + 1`) or division/modulo by a
+  divisor that folds to zero cannot be, and are cleanly rejected rather
+  than miscompiled. Real control flow (`if`/`while`/`loop`),
+  functions/recursion, Arrays, and every Standard Library built-in still
+  need genuine runtime codegen (registers, a call stack, real branches)
+  and fail with a clean diagnostic, never a silently-wrong `.exe`
+  (§33.9, §37). This is despite the IR itself already modeling all of
+  those (§33.16) and the IR Optimizer already correctly optimizing
+  programs that use them (§33.19) — the gap is specifically in
   `ir-to-x86-64.js`'s own coverage, not the IR/optimizer design, which is
   why closing it is the explicit next step (§33.14). Windows x86-64 only —
   no Linux/macOS/ARM64 target exists or was attempted. No assembler or

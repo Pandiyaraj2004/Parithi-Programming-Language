@@ -130,6 +130,11 @@ describe('Parity — control flow', () => {
     assertParity('repeat 3 as i\n    repeat 3 as j\n        say i * j\n    end repeat\nend repeat');
   });
 
+  test('a zero-iteration "repeat" runs its body zero times (an edge case distinct from "single iteration")', () => {
+    assertParity('repeat 0 as i\n    say "never"\nend repeat\nsay "done"');
+    assertParity('say "before"\nrepeat 0\n    say "never"\nend repeat\nsay "after"');
+  });
+
   test('stop, with and without a code, from inside nested control flow', () => {
     assertParity('say "before"\nstop\nsay "after"');
     assertParity('say "before"\nstop 5\nsay "after"');

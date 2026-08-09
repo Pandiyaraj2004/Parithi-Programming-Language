@@ -45,12 +45,30 @@ describe('Automatic backend selection (no --backend flag)', () => {
     });
   });
 
-  test('a program using variables automatically selects Bytecode + PVM (native is unsupported, bytecode is next in priority)', () => {
-    withTempFile('hold x = 5\nhold y = 10\nsay x + y\n', (file) => {
+  test('a program using a function call automatically selects Bytecode + PVM (native is unsupported, bytecode is next in priority)', () => {
+    withTempFile('task add(a, b)\n    return a + b\nend task\nsay add(5, 10)\n', (file) => {
       const { status, stdout } = pari([file, '--verbose']);
       assert.equal(status, ExitCode.SUCCESS);
       assert.match(stdout, /Backend: Bytecode \+ PVM/);
       assert.match(stdout, /^15$/m);
+    });
+  });
+
+  test('automatic selection executes exactly ONE backend — a native-eligible program\'s output never appears twice', () => {
+    withTempFile('say "run-once-marker"\n', (file) => {
+      const { status, stdout } = pari([file]);
+      assert.equal(status, ExitCode.SUCCESS);
+      const occurrences = (stdout.match(/run-once-marker/g) || []).length;
+      assert.equal(occurrences, 1, 'expected the program\'s output exactly once, never a partial-execution double-run');
+    });
+  });
+
+  test('automatic selection executes exactly ONE backend — a native-unsupported (Bytecode-selected) program\'s output never appears twice', () => {
+    withTempFile('task echo(x)\n    return x\nend task\nsay echo("run-once-marker")\n', (file) => {
+      const { status, stdout } = pari([file]);
+      assert.equal(status, ExitCode.SUCCESS);
+      const occurrences = (stdout.match(/run-once-marker/g) || []).length;
+      assert.equal(occurrences, 1, 'expected the program\'s output exactly once, never a partial-execution double-run');
     });
   });
 
@@ -141,7 +159,7 @@ describe('Forced --backend selection never silently falls back', () => {
   });
 
   test('--backend native on a program it cannot run exits with a clean diagnostic and produces NO program output at all', () => {
-    withTempFile('hold x = 1\nsay "should never print"\n', (file) => {
+    withTempFile('if true\n    say "should never print"\nend if\n', (file) => {
       const { status, stdout, stderr } = pari([file, '--backend', 'native']);
       assert.equal(status, ExitCode.COMPILER_ERROR);
       assert.doesNotMatch(stdout, /should never print/);
@@ -205,12 +223,12 @@ describe('--explain-backend (analysis only, never executes)', () => {
     });
   });
 
-  test('reports UNSUPPORTED for Native with a specific reason, and selects Bytecode, for a variable-using program', () => {
-    withTempFile('hold x = 1\nsay x\n', (file) => {
+  test('reports UNSUPPORTED for Native with a specific reason, and selects Bytecode, for an if/else program', () => {
+    withTempFile('if true\n    say "x"\nend if\n', (file) => {
       const { status, stdout } = pari(['--explain-backend', file]);
       assert.equal(status, ExitCode.SUCCESS);
       assert.match(stdout, /Native x86-64\s+UNSUPPORTED/);
-      assert.match(stdout, /Reason: Feature "VariableDeclaration" is not supported/);
+      assert.match(stdout, /Reason: Feature "IfStatement" is not supported/);
       assert.match(stdout, /Selected: Bytecode \+ PVM/);
     });
   });

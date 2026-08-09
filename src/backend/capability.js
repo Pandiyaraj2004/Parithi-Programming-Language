@@ -12,58 +12,25 @@
  * "trial-and-error execution" this phase forbids.
  */
 
-import { NodeType } from '../ast/ast-nodes.js';
-import { NativeCompileError } from '../native/errors.js';
-import { SourceLocation } from '../errors/index.js';
-
-function locationOf(filePath, node) {
-  return new SourceLocation(filePath, node.line, node.column);
-}
+import { checkNativeStatement } from '../native/codegen/native-codegen.js';
 
 /**
- * Mirrors native-codegen.js's own `extractSayText` gate exactly — same
- * supported subset, same feature/reason wording — but stops at the plain
- * AST walk: no IR generation, no x86-64 emission, no PE assembly. This is
- * the cheap check the brief requires ("must NOT compile the whole program
- * to native just to discover native can't support it"); only once Native
- * is actually SELECTED does anything proceed to real code generation.
+ * Reuses native-codegen.js's own `checkNativeStatement` gate directly —
+ * the SAME function, not a second, independently-maintained copy that
+ * could silently drift out of sync — but stops at the plain AST walk: no
+ * IR generation, no x86-64 emission, no PE assembly. This is the cheap
+ * check the brief requires ("must NOT compile the whole program to
+ * native just to discover native can't support it"); only once Native is
+ * actually SELECTED does anything proceed to real code generation.
  */
 export function checkNativeCapability(program, filePath) {
-  for (const node of program.body) {
-    if (node.type !== NodeType.PRINT_STATEMENT) {
-      const feature = node.type;
-      const reason = 'the native backend currently only compiles "say" statements with String literal arguments.';
-      return {
-        supported: false,
-        feature,
-        reason,
-        error: new NativeCompileError({
-          feature,
-          reason,
-          location: locationOf(filePath, node),
-          suggestion: 'use "pari --backend bytecode" or "pari --backend interpreter" for full-language support, or simplify this program for --backend native.',
-        }),
-      };
-    }
-    for (const arg of node.arguments) {
-      if (arg.type !== NodeType.LITERAL || arg.valueType !== 'String') {
-        const feature = `say with a ${arg.type === NodeType.LITERAL ? arg.valueType : arg.type} argument`;
-        const reason = 'the native backend can currently only print String literals, not variables, expressions, or other value types.';
-        return {
-          supported: false,
-          feature,
-          reason,
-          error: new NativeCompileError({
-            feature,
-            reason,
-            location: locationOf(filePath, arg),
-            suggestion: 'use only double-quoted string literals in "say" for --backend native, e.g. say "Hello, Parithi!".',
-          }),
-        };
-      }
-    }
+  try {
+    program.body.forEach((node) => checkNativeStatement(node, filePath));
+    return { supported: true };
+  } catch (error) {
+    if (typeof error.format !== 'function') throw error; // a genuine internal bug — never swallow it as a clean "unsupported" verdict
+    return { supported: false, feature: error.feature, reason: error.reason, error };
   }
-  return { supported: true };
 }
 
 /**
