@@ -1,4 +1,42 @@
-# Parithi
+# Parithi — Language, Interpreter & Virtual Machine
+
+> Readable syntax with a compiler pipeline, bytecode execution, and an experimental native backend.
+
+**JavaScript · Node.js · Language Design · Bytecode · x86-64**
+
+## At a glance
+
+- Lexer, parser, semantic analysis, interpreter, and bytecode generation.
+- Backend capability analysis and explicit execution selection.
+- Bytecode optimization, examples, and parity-oriented tests.
+- A Windows x86-64 native backend with a deliberately limited supported subset.
+
+## Explore the implementation
+
+| Start here | What to inspect |
+| --- | --- |
+| [bin/pari.js](bin/pari.js) | CLI entry point |
+| [src/backend](src/backend) | Backend selection |
+| [src/bytecode](src/bytecode) | Bytecode generation |
+| [tests](tests) | Tests |
+| [docs/MASTER_DOCUMENT.md](docs/MASTER_DOCUMENT.md) | Language specification |
+
+### First run
+
+Requires Node.js 18 or newer.
+
+```bash
+git clone https://github.com/Pandiyaraj2004/Parithi-Programming-Language.git
+cd Parithi-Programming-Language
+node bin/pari.js examples/hello.pr
+npm test
+```
+
+The native backend supports a narrower language subset than the interpreter and VM. See the capability discussion below before selecting it.
+
+---
+
+## Detailed guide
 
 A human-friendly programming language designed for readability and
 simplicity — read code out loud and understand it, no training required.
@@ -756,3 +794,7 @@ request guidelines.
 ## License
 
 [MIT](LICENSE)
+
+---
+
+Built by **Pandiyaraj A** · [Portfolio](https://pandiyaraj.netlify.app/) · [GitHub](https://github.com/Pandiyaraj2004) · [LinkedIn](https://www.linkedin.com/in/pandiyaraj-a-mca/)
